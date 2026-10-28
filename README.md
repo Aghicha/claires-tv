@@ -33,6 +33,47 @@ device; it is stored encrypted with the Android Keystore in the app's private da
 - The guide uses its own worker so it can never hold up channel queries.
 - No analytics, no telemetry, no background services, no ads.
 
+## Install on your TV (for testers)
+
+Use **Downloader by AFTVnews** to install with your TV remote — no computer or developer tools needed.
+Allow about **5–10 minutes**, plus time to enter your provider details.
+
+You need an **Android TV or Google TV device running Android 8.0 or newer**, an internet connection,
+and the **Claire's TV APK download link or Downloader short code supplied by the maintainer**.
+Ask the person who invited you to test for that link or code before starting; this README does not
+currently provide one. The Android APK does not install on Samsung Tizen, LG webOS, Roku or Apple TV.
+
+### Install with Downloader
+
+1. **Install Downloader.** On your TV, open Google Play and search for **Downloader by AFTVnews**.
+   Choose the app by **AFTVnews.com** and install it. See its
+   [Google Play listing](https://play.google.com/store/apps/details?id=com.esaba.downloader).
+2. **Download Claire's TV.** Open Downloader. On its Home screen, enter the APK link or short code
+   supplied by the maintainer in the URL/search field, then select **Go**. If a download page opens,
+   select the Claire's TV APK download on that page.
+3. **Allow the installation.** If the TV blocks installation, choose **Settings** in the prompt and
+   allow **Downloader** to **Install unknown apps**. Menu names vary by TV. Return to Downloader
+   and open the downloaded APK again if needed.
+4. **Install the app.** Select **Install**, wait for it to finish, then select **Open**.
+   You can also find **Claire's TV** in your TV's apps list afterwards.
+5. **Add your source.** Choose **Xtream Codes** or **M3U playlist URL** and enter the details from your
+   own provider. Wait for the first catalog download, then choose a channel, film or series.
+   Claire's TV does not include channels, accounts or subscriptions.
+
+### Get a newer test version
+
+Repeat the download and installation steps with the latest link or code from the maintainer.
+Updates are installed manually; the app does not download updates itself. Install over the existing
+app to retain your saved source and settings, provided the new APK has the same app ID and signing key.
+
+### If installation fails
+
+- **Download fails or opens the wrong page:** check the link or code with the maintainer.
+- **Installation is blocked:** check that **Install unknown apps** is allowed for **Downloader**.
+- **App not installed:** send the maintainer your TV model, Android version and the exact message.
+  An older test build signed with a different key can also prevent an update. Do not uninstall it
+  without checking first — uninstalling removes your saved source and settings.
+
 ## Build
 
 Requirements: **JDK 17**, Android SDK platform 36, build-tools, and internet access for the pinned
