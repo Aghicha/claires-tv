@@ -20,6 +20,7 @@ final class LibraryDeviceChecks {
         seed(catalog,source);checkMigration(test,source);checkStorage(catalog,source);
         Activity browser=test.startActivitySync(new Intent(test.getTargetContext(),LibraryActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("kind","movie").putExtra("benchmark",true));
         await(test,()->list(browser).getCount()==300,"Cached film catalog");
+        checkFilterControls(test,browser);
         test.runOnMainSync(()->{
             ListView categories=browser.findViewById(android.R.id.content).findViewWithTag("library-categories");
             check(((LinearLayout.LayoutParams)((View)categories.getParent()).getLayoutParams()).weight==26,"Category panel 26%");
@@ -107,6 +108,7 @@ final class LibraryDeviceChecks {
             try(SQLiteStatement row=d.compileStatement("INSERT INTO media_items(kind,id,name,category,extension,summary,position,image) VALUES(?,?,?,?,?,?,?,'')")){
                 for(int i=0;i<300;i++){
                     row.bindString(1,"movie");row.bindString(2,Integer.toString(i));row.bindString(3,String.format(Locale.ROOT,"Fixture film %04d",i));row.bindString(4,i%2==0?"a":"b");row.bindString(5,"mp4");row.bindString(6,"{\"year\":\"2025\",\"genre\":\"Fixture\"}");row.bindLong(7,i);row.executeInsert();
+                    Catalog.indexMetadata(d,"movie",Integer.toString(i),"Fixture film",new JSONObject("{\"year\":\"2025\",\"genre\":\"Fixture\"}"));
                     catalog.putMediaCache("movie",Integer.toString(i),"{\"info\":{\"plot\":\"Synthetic film for local UI testing.\",\"duration\":\"00:10:00\"},\"movie_data\":{\"container_extension\":\"mkv\"}}");
                 }
                 for(int i=0;i<2;i++){String id=i==0?"900":"901";row.bindString(1,"series");row.bindString(2,id);row.bindString(3,"Fixture series "+i);row.bindString(4,"s");row.bindString(5,"");row.bindString(6,"{\"plot\":\"Synthetic series for local UI testing.\"}");row.bindLong(7,i);row.executeInsert();catalog.putMediaCache("series",id,seriesJson());}
@@ -117,6 +119,29 @@ final class LibraryDeviceChecks {
         }finally{d.endTransaction();}
     }
     private static String seriesJson(){return "{\"info\":{\"plot\":\"Synthetic test series.\"},\"seasons\":[{\"season_number\":1,\"name\":\"Season one\"},{\"season_number\":2,\"name\":\"Season two\"}],\"episodes\":{\"1\":[{\"id\":101,\"episode_num\":1,\"title\":\"First episode\",\"container_extension\":\"mp4\",\"info\":{\"plot\":\"First episode description.\"}},{\"id\":102,\"episode_num\":2,\"title\":\"Second episode\",\"container_extension\":\"mkv\"}],\"2\":[{\"id\":201,\"episode_num\":1,\"title\":\"Season two opener\",\"container_extension\":\"mp4\",\"info\":{\"duration\":\"00:42:00\"}}]}}";}
+    private static void checkFilterControls(Instrumentation test,Activity browser) throws Exception{
+        click(test,browser,"library-filters");
+        clickText(test,"Release year: Any");clickText(test,"2025");clickText(test,"Done");
+        clickText(test,"Genre: Any");clickText(test,"fixture");clickText(test,"Done");
+        clickText(test,"Language: Any");clickText(test,LibraryFilters.UNKNOWN);clickText(test,"Done");
+        screenshot(test,"library-filters.png");clickText(test,"Apply");
+        await(test,()->list(browser).getCount()==300&&button(browser,"library-filters").getText().toString().equals("Filters (3)"),"Three combined filter controls apply");
+        click(test,browser,"library-filters");clickText(test,"Clear all");clickText(test,"Cancel");
+        test.runOnMainSync(()->check(button(browser,"library-filters").getText().toString().equals("Filters (3)"),"Cancel discards draft reset"));
+        click(test,browser,"library-filters");clickText(test,"Clear all");clickText(test,"Apply");
+        await(test,()->list(browser).hasFocus()&&button(browser,"library-filters").getText().toString().equals("Filters"),"Clear and Apply reset filters and restore grid focus");
+    }
+    private static void clickText(Instrumentation test,String text){
+        for(int attempt=0;attempt<100;attempt++){
+            AccessibilityNodeInfo root=test.getUiAutomation().getRootInActiveWindow();
+            if(root!=null)for(AccessibilityNodeInfo node:root.findAccessibilityNodeInfosByText(text)){
+                if(text.equalsIgnoreCase(node.getText()==null?"":node.getText().toString())&&node.isEnabled()){
+                    while(node!=null&&!node.isClickable())node=node.getParent();
+                    if(node!=null&&node.performAction(AccessibilityNodeInfo.ACTION_CLICK)){test.waitForIdleSync();return;}
+                }
+            }SystemClock.sleep(50);
+        }throw new AssertionError("Missing filter control: "+text);
+    }
     private static void checkStorage(Catalog catalog,Source source) throws Exception{
         check(catalog.mediaCount("movie","","")==300,"Movie count");check(catalog.mediaCount("series","","")==2,"Series count isolated");check(catalog.mediaPage("movie","","",250).size()==50,"Bounded movie paging");
         List<Catalog.Group> order=catalog.mediaGroups("movie"),original=new ArrayList<>(order);Collections.swap(order,0,3);catalog.saveMediaOrder("movie",order);check(catalog.mediaGroups("movie").get(0).id().equals(order.get(0).id()),"Movie category order persists");check(catalog.mediaGroups("series").get(0).id().isEmpty(),"Series category order independent");catalog.saveMediaOrder("movie",original);
@@ -181,7 +206,7 @@ final class LibraryDeviceChecks {
         d.execSQL("INSERT INTO playback_progress VALUES('movie:7',4242,600000,1)");
         d.setVersion(3);d.close();
         try(Catalog upgraded=new Catalog(test.getTargetContext(),file)){
-            check(upgraded.getReadableDatabase().getVersion()==4,"Schema upgraded to version 4");
+            check(upgraded.getReadableDatabase().getVersion()==6,"Schema upgraded to version 6");
             List<LibraryItem> rows=upgraded.mediaPage("movie","","",0);
             check(rows.size()==1&&rows.get(0).name.equals("Kept film"),"v3 migration keeps saved films");
             check(rows.get(0).image.isEmpty(),"v3 migration adds an empty poster column");

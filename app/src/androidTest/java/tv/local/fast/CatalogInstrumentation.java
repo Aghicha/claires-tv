@@ -10,8 +10,10 @@ import java.util.*;
 
 @androidx.annotation.OptIn(markerClass=androidx.media3.common.util.UnstableApi.class)
 public final class CatalogInstrumentation extends Instrumentation {
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);start();}
+    private boolean filtersOnly;
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);filtersOnly=arguments!=null&&"true".equals(arguments.getString("filtersOnly"));start();}
     @Override public void onStart() {
+        if(filtersOnly){FiltersInstrumentation.run(this);return;}
         Bundle results=new Bundle();Catalog catalog=new Catalog(getTargetContext(),"benchmark.db");
         try {
             android.accessibilityservice.AccessibilityServiceInfo access=getUiAutomation().getServiceInfo();
@@ -196,7 +198,7 @@ public final class CatalogInstrumentation extends Instrumentation {
         old.execSQL("CREATE TABLE meta(id TEXT PRIMARY KEY,value TEXT NOT NULL)");old.execSQL("INSERT INTO meta VALUES('source',?)",new Object[]{Vault.encrypt(source)});old.setVersion(1);old.close();
         try(Catalog upgraded=new Catalog(getTargetContext(),name)){
             check(upgraded.count()==1,"Schema migration keeps channels");check(upgraded.source().json().equals(source.json()),"Schema migration keeps encrypted login");
-            check(upgraded.getReadableDatabase().getVersion()==4,"Schema upgraded to version 4");
+            check(upgraded.getReadableDatabase().getVersion()==6,"Schema upgraded to version 6");
         }finally{getTargetContext().deleteDatabase(name);}
     }
 }

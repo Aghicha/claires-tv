@@ -12,7 +12,7 @@ final class Catalog extends SQLiteOpenHelper {
     static final int PAGE=250;
     record Group(String id,String name,int count) { @Override public String toString(){return name+"  ·  "+count;} }
     Catalog(Context c) { this(c,"catalog.db"); }
-    Catalog(Context c,String name) { super(c,name,null,4); setWriteAheadLoggingEnabled(true); }
+    Catalog(Context c,String name) { super(c,name,null,6); setWriteAheadLoggingEnabled(true); }
     @Override public void onCreate(SQLiteDatabase d) {
         d.execSQL("CREATE TABLE channels(id TEXT PRIMARY KEY,name TEXT NOT NULL,category TEXT NOT NULL,url TEXT NOT NULL,position INTEGER NOT NULL)");
         d.execSQL("CREATE INDEX channels_category ON channels(category,position)");
@@ -33,8 +33,16 @@ final class Catalog extends SQLiteOpenHelper {
             if(old>=3)d.execSQL("ALTER TABLE media_items ADD COLUMN image TEXT NOT NULL DEFAULT ''");
             d.delete("media_status",null,null);// forces one re-import so saved titles gain their posters
         }
+        if(old<5){
+            createFacets(d);
+            try(Cursor c=d.rawQuery("SELECT kind,id,name,summary FROM media_items",null)){
+                while(c.moveToNext())indexMetadata(d,c.getString(0),c.getString(1),c.getString(2),LibraryFilters.json(c.getString(3)));
+            }
+        }
+        if(old<6)indexCategoryGenres(d);
     }
     private static void createLibraryTables(SQLiteDatabase d){
+        createFacets(d);
         d.execSQL("CREATE TABLE IF NOT EXISTS media_items(kind TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,category TEXT NOT NULL,extension TEXT NOT NULL,summary TEXT NOT NULL,position INTEGER NOT NULL,image TEXT NOT NULL DEFAULT '',PRIMARY KEY(kind,id))");
         d.execSQL("CREATE INDEX IF NOT EXISTS media_category ON media_items(kind,category,position)");
         d.execSQL("CREATE INDEX IF NOT EXISTS media_position ON media_items(kind,position)");
@@ -45,7 +53,34 @@ final class Catalog extends SQLiteOpenHelper {
         d.execSQL("CREATE TABLE IF NOT EXISTS media_status(kind TEXT PRIMARY KEY,updated INTEGER NOT NULL)");
         d.execSQL("CREATE TABLE IF NOT EXISTS playback_progress(id TEXT PRIMARY KEY,position INTEGER NOT NULL,duration INTEGER NOT NULL,updated INTEGER NOT NULL)");
     }
-    static void clearLibraries(SQLiteDatabase d){for(String table:new String[]{"media_items","media_groups","media_favorites","media_order","media_cache","media_status","playback_progress"})d.delete(table,null,null);}
+    private static void createFacets(SQLiteDatabase d){
+        d.execSQL("CREATE TABLE IF NOT EXISTS media_facets(kind TEXT NOT NULL,id TEXT NOT NULL,facet TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(kind,id,facet,value))");
+        d.execSQL("CREATE INDEX IF NOT EXISTS media_facet_values ON media_facets(kind,facet,value,id)");
+    }
+    static void indexMetadata(SQLiteDatabase d,String kind,String id,String name,org.json.JSONObject summary){
+        d.delete("media_facets","kind=? AND id=?",new String[]{kind,id});
+        List<java.util.Set<String>> metadata=LibraryFilters.metadata(name,summary);
+        try(android.database.sqlite.SQLiteStatement row=d.compileStatement("INSERT OR IGNORE INTO media_facets VALUES(?,?,?,?)")){
+            for(int i=0;i<3;i++)for(String value:metadata.get(i)){
+                row.bindString(1,kind);row.bindString(2,id);row.bindString(3,LibraryFilters.FACETS[i]);row.bindString(4,value);row.executeInsert();
+            }
+        }
+    }
+    /** Keep provider category labels explicit when a catalog omits per-title genres. */
+    static void indexCategoryGenres(SQLiteDatabase d){
+        d.execSQL("INSERT OR IGNORE INTO media_facets(kind,id,facet,value) SELECT c.kind,c.id,'genre','Category: '||g.name FROM media_items c JOIN media_groups g ON g.kind=c.kind AND g.id=c.category JOIN media_facets mf ON mf.kind=c.kind AND mf.id=c.id AND mf.facet='genre' AND mf.value=?",new Object[]{LibraryFilters.UNKNOWN});
+        d.execSQL("DELETE FROM media_facets WHERE facet='genre' AND value=? AND EXISTS(SELECT 1 FROM media_facets other WHERE other.kind=media_facets.kind AND other.id=media_facets.id AND other.facet='genre' AND other.value<>?)",new Object[]{LibraryFilters.UNKNOWN,LibraryFilters.UNKNOWN});
+    }
+    List<List<String>> mediaFilterOptions(String kind){
+        List<List<String>> options=new ArrayList<>();
+        for(String facet:LibraryFilters.FACETS){
+            List<String> values=new ArrayList<>();
+            try(Cursor c=getReadableDatabase().rawQuery("SELECT DISTINCT value FROM media_facets WHERE kind=? AND facet=? ORDER BY (value=?),value "+(facet.equals("year")?"DESC":"COLLATE NOCASE"),new String[]{kind,facet,LibraryFilters.UNKNOWN})){
+                while(c.moveToNext())values.add(c.getString(0));
+            }options.add(values);
+        }return options;
+    }
+    static void clearLibraries(SQLiteDatabase d){for(String table:new String[]{"media_facets","media_items","media_groups","media_favorites","media_order","media_cache","media_status","playback_progress"})d.delete(table,null,null);}
     Source source() throws Exception {
         try(Cursor c=getReadableDatabase().rawQuery("SELECT value FROM meta WHERE id='source'",null)) { return c.moveToFirst()?Vault.decrypt(c.getString(0)):null; }
     }
@@ -144,7 +179,23 @@ final class Catalog extends SQLiteOpenHelper {
         return new Filter("c.kind=? AND "+f.where,args);
     }
     int mediaCount(String kind,String category,String search){
-        Filter f=mediaFilter(kind,category,search);
+        return mediaCount(kind,category,search,LibraryFilters.NONE);
+    }
+    private Filter mediaFilter(String kind,String category,String search,LibraryFilters selections){
+        Filter base=mediaFilter(kind,category,search);
+        if(!category.isEmpty()||selections.size()==0)return base;
+        StringBuilder where=new StringBuilder(base.where);List<String> args=new ArrayList<>(java.util.Arrays.asList(base.args));
+        for(int i=0;i<3;i++){
+            java.util.Set<String> values=selections.values.get(i);if(values.isEmpty())continue;
+            where.append(" AND EXISTS(SELECT 1 FROM media_facets mf WHERE mf.kind=c.kind AND mf.id=c.id AND mf.facet=? AND mf.value IN (");
+            args.add(LibraryFilters.FACETS[i]);int n=0;
+            for(String value:values){if(n++>0)where.append(',');where.append('?');args.add(value);}
+            where.append("))");
+        }
+        return new Filter(where.toString(),args.toArray(new String[0]));
+    }
+    int mediaCount(String kind,String category,String search,LibraryFilters selections){
+        Filter f=mediaFilter(kind,category,search,selections);
         try(Cursor c=getReadableDatabase().rawQuery("SELECT count(*) FROM media_items c LEFT JOIN media_favorites f ON c.kind=f.kind AND c.id=f.id WHERE "+f.where,f.args)){c.moveToFirst();return c.getInt(0);}
     }
     List<Group> mediaGroups(String kind){
@@ -159,7 +210,10 @@ final class Catalog extends SQLiteOpenHelper {
         list.sort(java.util.Comparator.comparingInt(g->order.getOrDefault(g.id(),Integer.MAX_VALUE)));return list;
     }
     List<LibraryItem> mediaPage(String kind,String category,String search,int offset){
-        Filter f=mediaFilter(kind,category,search);List<LibraryItem> list=new ArrayList<>();
+        return mediaPage(kind,category,search,offset,LibraryFilters.NONE);
+    }
+    List<LibraryItem> mediaPage(String kind,String category,String search,int offset,LibraryFilters selections){
+        Filter f=mediaFilter(kind,category,search,selections);List<LibraryItem> list=new ArrayList<>();
         // Continue watching reads newest-first; every other category keeps the provider's own order.
         String order=category.equals(CONTINUE)?resumedAt(kind)+" DESC":"c.position";
         try(Cursor c=getReadableDatabase().rawQuery("SELECT c.id,c.name,c.category,c.extension,c.summary,c.image,f.id IS NOT NULL FROM media_items c LEFT JOIN media_favorites f ON c.kind=f.kind AND c.id=f.id WHERE "+f.where+" ORDER BY "+order+" LIMIT "+PAGE+" OFFSET "+offset,f.args)){

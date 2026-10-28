@@ -78,6 +78,19 @@ failed refresh keeps the previous catalog.
 - **Search**: in either dialog the keyboard's Search/Done key or Enter submits, hides the keyboard and
   returns focus to the results.
 
+## Filter all films or series
+
+In **Films** or **Series**, select **All films** or **All series**, then **Filters**. Choose multiple release
+years, genres, or languages, select **Done** in each list, and choose **Apply**. Choices within a filter
+match any selected value; the different filters must all match. Title search works with the filters.
+**Clear all** resets the draft; **Apply** confirms it. Cancel or Back discards unconfirmed changes.
+
+Each library keeps separate selections while its screen stays open. Other categories are unaffected.
+Filters use provider catalog metadata. Missing fields appear as **Not supplied**; missing genres use a
+named provider category, clearly prefixed **Category:**. A parenthesized title year is used when the release
+field is missing. Refresh retrieves newly supported language fields. A language label does not guarantee
+an audio track. The upgrade indexes saved titles while preserving credentials, favorites and playback positions.
+
 ## Tests
 
 ```sh
@@ -91,6 +104,13 @@ synthetic catalog in an isolated database (`benchmark.db`) — it never touches 
 paging, search, category reorder and its persistence, schema migrations, favorites, the poster grid and
 detail pages, Continue watching, playback controls and resume, and D-pad navigation. It prints timings
 alongside the results. **`INSTRUMENTATION_CODE: -1` means the run passed.**
+
+The library checks include multi-select filter dialogs, Apply, Clear all, Cancel and grid focus. To run
+the isolated query and metadata-migration checks separately:
+
+```sh
+adb shell am instrument -w -e filtersOnly true tv.local.fast.test/tv.local.fast.CatalogInstrumentation
+```
 
 ## Notes from building this
 

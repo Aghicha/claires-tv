@@ -14,8 +14,10 @@ final class LibraryProvider {
         SQLiteDatabase d=catalog.getWritableDatabase();d.beginTransaction();
         try{
             d.delete("media_items","kind=?",new String[]{kind});d.delete("media_groups","kind=?",new String[]{kind});
+            d.delete("media_facets","kind=?",new String[]{kind});
             importGroups(d,source,kind);
             int count=importItems(d,source,kind,progress);
+            Catalog.indexCategoryGenres(d);
             ContentValues status=new ContentValues();status.put("kind",kind);status.put("updated",System.currentTimeMillis());d.insertWithOnConflict("media_status",null,status,SQLiteDatabase.CONFLICT_REPLACE);
             d.execSQL("DELETE FROM media_favorites WHERE kind=? AND id NOT IN (SELECT id FROM media_items WHERE kind=?)",new Object[]{kind,kind});
             d.delete("media_cache","kind=?",new String[]{kind});
@@ -26,6 +28,12 @@ final class LibraryProvider {
         if(reader.peek()==JsonToken.NULL){reader.nextNull();return "";}
         if(reader.peek()==JsonToken.STRING||reader.peek()==JsonToken.NUMBER)return reader.nextString();
         reader.skipValue();return "";
+    }
+    private static String metadataValue(JsonReader reader) throws IOException{
+        if(reader.peek()!=JsonToken.BEGIN_ARRAY)return scalar(reader);
+        StringBuilder values=new StringBuilder();reader.beginArray();
+        while(reader.hasNext()){String value=scalar(reader);if(!value.isEmpty()){if(values.length()>0)values.append(",");values.append(value);}}
+        reader.endArray();return values.toString();
     }
     private static void importGroups(SQLiteDatabase d,Source source,String kind) throws Exception{
         String action=kind.equals("movie")?"get_vod_categories":"get_series_categories";
@@ -57,12 +65,14 @@ final class LibraryProvider {
                         case "category_id":category=scalar(j);break;
                         case "container_extension":extension=scalar(j);break;
                         case "stream_icon":case "cover":image=scalar(j);break;// film poster / series cover
+                        case "language":case "original_language":case "audio_language":case "languages":case "genres":
                         case "plot":case "cast":case "director":case "genre":case "releaseDate":case "releasedate":case "release_date":case "year":case "rating":case "rating_5based":case "episode_run_time":
-                            String value=scalar(j);if(value.length()>8000)value=value.substring(0,8000);summary.put(key,value);break;
+                            String value=metadataValue(j);if(value.length()>8000)value=value.substring(0,8000);summary.put(key,value);break;
                         default:j.skipValue();
                     }
                 }j.endObject();if(!id.matches("[0-9]+"))continue;if(category.isEmpty())category="Other";if(extension.isEmpty())extension="mp4";
                 row.bindString(1,kind);row.bindString(2,id);row.bindString(3,name.isEmpty()?(kind.equals("movie")?"Film ":"Series ")+id:name);row.bindString(4,category);row.bindString(5,extension);row.bindString(6,summary.toString());row.bindLong(7,count++);row.bindString(8,Posters.clean(image));row.executeInsert();
+                Catalog.indexMetadata(d,kind,id,name,summary);
                 if(count%250==0)progress.accept(count);if(count>200000)throw new IOException("Library exceeds 200,000 titles.");
             }j.endArray();return count;
         }

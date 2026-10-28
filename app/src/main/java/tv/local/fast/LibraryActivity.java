@@ -30,7 +30,9 @@ public final class LibraryActivity extends Activity {
     private TextView groupHeading,itemHeading;
     private ListView groupList;
     private GridView grid;
-    private Button groupSearchButton,itemSearchButton,refresh;
+    private Button groupSearchButton,itemSearchButton,refresh,filterButton;
+    private final Map<String,LibraryFilters> libraryFilters=new HashMap<>();
+    private LibraryFilters filters(){return category.isEmpty()?libraryFilters.getOrDefault(kind,LibraryFilters.NONE):LibraryFilters.NONE;}
     private ArrayAdapter<Catalog.Group> groupAdapter;
     private Titles titles;
     // detail
@@ -97,6 +99,7 @@ public final class LibraryActivity extends Activity {
         right.setTag("library-grid-panel");panels.addView(right,new LinearLayout.LayoutParams(0,-1,74));
         LinearLayout rightHeader=new LinearLayout(this);
         itemHeading=ui.text(kind.equals("movie")?"Films":"Series",15,MUTED);rightHeader.addView(itemHeading,new LinearLayout.LayoutParams(0,ui.dp(48),1));
+        filterButton=ui.button("Filters",this::editFilters);filterButton.setTag("library-filters");rightHeader.addView(filterButton);updateFilterButton();
         itemSearchButton=ui.button("Search",this::searchItems);itemSearchButton.setTag("library-search");rightHeader.addView(itemSearchButton);right.addView(rightHeader);
         grid=new GridView(this);grid.setTag("library-list");grid.setNumColumns(COLUMNS);
         grid.setHorizontalSpacing(ui.dp(12));grid.setVerticalSpacing(ui.dp(12));grid.setSelector(ui.rowSelector());
@@ -149,14 +152,15 @@ public final class LibraryActivity extends Activity {
     }
     private void loadTitles(boolean focus){
         if(detailMode)return;
+        updateFilterButton();LibraryFilters selections=filters();
         int token=++pageVersion;String requestKind=kind,filter=category,term=search;
-        io.execute(()->{try{int count=catalog.mediaCount(requestKind,filter,term);List<LibraryItem> rows=catalog.mediaPage(requestKind,filter,term,0);
+        io.execute(()->{try{int count=catalog.mediaCount(requestKind,filter,term,selections);List<LibraryItem> rows=catalog.mediaPage(requestKind,filter,term,0,selections);
             post(()->{if(token!=pageVersion||detailMode)return;
-                titles.reset(count,requestKind,filter,term,rows,token);
+                titles.reset(count,requestKind,filter,term,rows,token,selections);
                 int position=Math.min(restoreRow,Math.max(0,count-1));restoreRow=0;grid.setSelection(position);
                 itemHeading.setText((kind.equals("movie")?"Films":"Series")+(count>0?"  ·  "+count:""));
                 if(count==0&&filter.equals(Catalog.CONTINUE))showStatus("Nothing to continue yet. A film or episode you stop partway through appears here.");
-                else if(count==0)showStatus("No matching titles. Try another category or search; if the library is empty your provider may not include it.");
+                else if(count==0)showStatus("No matching titles. Clear filters or change your search or category.");
                 else status.setVisibility(View.GONE);
                 if(focus)grid.requestFocus();
             });
@@ -183,6 +187,44 @@ public final class LibraryActivity extends Activity {
         TvUi.searchDialog(this,root,kind.equals("movie")?"Search films":"Search series","Title",search,value->{
             search=value;restoreRow=0;loadTitles(true);});
     }
+
+    private void updateFilterButton(){
+        filterButton.setVisibility(category.isEmpty()?View.VISIBLE:View.GONE);
+        filterButton.setText(filters().size()==0?"Filters":"Filters ("+filters().size()+")");
+        filterButton.setEnabled(!loading);
+    }
+    private void editFilters(){
+        if(loading||!category.isEmpty())return;
+        String requested=kind;int version=generation;filterButton.setEnabled(false);
+        io.execute(()->{try{List<List<String>> options=catalog.mediaFilterOptions(requested);
+            post(()->{if(version!=generation||detailMode||!category.isEmpty())return;filterButton.setEnabled(true);showFilters(options);});
+        }catch(Exception e){post(()->{if(version!=generation||detailMode)return;filterButton.setEnabled(true);toast("Could not read filters. Try again.");});}});
+    }
+    private void showFilters(List<List<String>> options){
+        List<Set<String>> draft=new ArrayList<>();for(Set<String> values:filters().values)draft.add(new HashSet<>(values));
+        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(ui.dp(20),ui.dp(10),ui.dp(20),ui.dp(10));panel.setBackgroundColor(BG);
+        TextView help=ui.text("Choose several values; the filters work together. Missing genres use provider categories.\nLanguage needs provider metadata and does not guarantee an audio track.",14,MUTED);panel.addView(help);
+        String[] labels={"Release year","Genre","Language"};List<Button> buttons=new ArrayList<>();
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(kind.equals("movie")?"Filter all films":"Filter all series").setView(panel)
+            .setPositiveButton("Apply",(d,w)->{libraryFilters.put(kind,new LibraryFilters(draft.get(0),draft.get(1),draft.get(2)));restoreRow=0;loadTitles(true);})
+            .setNeutralButton("Clear all",null).setNegativeButton("Cancel",null).create();
+        for(int i=0;i<3;i++){
+            final int facet=i;Button b=ui.button(filterLabel(labels[i],draft.get(i)),()->{
+                List<String> available=options.get(facet);
+                if(available.isEmpty()){toast("No metadata available. Refresh this library to load provider fields.");return;}
+                String[] values=available.toArray(new String[0]);boolean[] checked=new boolean[values.length];
+                Set<String> pending=new HashSet<>(draft.get(facet));
+                for(int j=0;j<values.length;j++)checked[j]=pending.contains(values[j]);
+                AlertDialog choices=new AlertDialog.Builder(this).setTitle(labels[facet]).setMultiChoiceItems(values,checked,(d,which,on)->{if(on)pending.add(values[which]);else pending.remove(values[which]);})
+                    .setPositiveButton("Done",(d,w)->{draft.set(facet,pending);buttons.get(facet).setText(filterLabel(labels[facet],pending));})
+                    .setNeutralButton("Clear",(d,w)->{draft.set(facet,new HashSet<>());buttons.get(facet).setText(filterLabel(labels[facet],draft.get(facet)));})
+                    .setNegativeButton("Cancel",null).create();
+                choices.setOnShowListener(d->{choices.getListView().setSelector(ui.rowSelector());choices.getListView().requestFocus();});choices.show();
+            });b.setSingleLine(true);b.setEllipsize(TextUtils.TruncateAt.END);buttons.add(b);panel.addView(b,new LinearLayout.LayoutParams(-1,ui.dp(52)));
+        }
+        dialog.setOnShowListener(d->{dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v->{for(int i=0;i<3;i++){draft.set(i,new HashSet<>());buttons.get(i).setText(filterLabel(labels[i],draft.get(i)));}});buttons.get(0).requestFocus();});dialog.show();
+    }
+    private static String filterLabel(String label,Set<String> selected){return label+": "+(selected.isEmpty()?"Any":String.join(", ",new TreeSet<>(selected)));}
 
     // ---------- detail: artwork, everything known, and a Watch button ----------
     private void openDetail(LibraryItem item){
@@ -357,7 +399,9 @@ public final class LibraryActivity extends Activity {
         private final LinkedHashMap<Integer,List<LibraryItem>> pages=new LinkedHashMap<>(8,.75f,true);
         private final Set<Integer> pending=new HashSet<>();
         private int total,token;private String requestKind,filter,term;
-        void reset(int count,String kind,String category,String search,List<LibraryItem> first,int version){
+        private LibraryFilters selections=LibraryFilters.NONE;
+        void reset(int count,String kind,String category,String search,List<LibraryItem> first,int version,LibraryFilters selectedFilters){
+            selections=selectedFilters;
             total=count;requestKind=kind;filter=category;term=search;token=version;pages.clear();pending.clear();pages.put(0,first);notifyDataSetChanged();
         }
         LibraryItem at(int position){
@@ -367,8 +411,8 @@ public final class LibraryActivity extends Activity {
         }
         void requestPage(int page){
             if(page<0||page*Catalog.PAGE>=total||pages.containsKey(page)||!pending.add(page))return;
-            int version=token;String requested=requestKind,filterCategory=filter,filterSearch=term;
-            io.execute(()->{try{List<LibraryItem> rows=catalog.mediaPage(requested,filterCategory,filterSearch,page*Catalog.PAGE);
+            int version=token;String requested=requestKind,filterCategory=filter,filterSearch=term;LibraryFilters selectedFilters=selections;
+            io.execute(()->{try{List<LibraryItem> rows=catalog.mediaPage(requested,filterCategory,filterSearch,page*Catalog.PAGE,selectedFilters);
                 post(()->{if(pageVersion!=version||detailMode)return;pending.remove(page);pages.put(page,rows);
                     while(pages.size()>8)pages.remove(pages.keySet().iterator().next());notifyDataSetChanged();});
             }catch(Exception e){post(()->{pending.remove(page);toast("Could not read titles. Scroll again to retry.");});}});
