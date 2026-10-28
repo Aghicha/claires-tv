@@ -111,7 +111,8 @@ failed refresh keeps the previous catalog.
 ## Using it with the remote
 
 - **Live TV**: Right moves from the categories to the channels. OK plays the selected channel; holding OK
-  toggles a favorite. The Information column is read-only and takes no focus.
+  toggles a favorite. In fullscreen, Up moves down the channel list and Down moves up it. The Information
+  column is read-only and takes no focus.
 - **Categories**: hold OK on one to reorder it — the full list appears with it selected, Up/Down moves it,
   OK saves and Back cancels. The order survives restarts and ordinary refreshes.
 - **Films / Series**: OK on a poster opens its page; holding OK toggles a favorite without opening it. Back

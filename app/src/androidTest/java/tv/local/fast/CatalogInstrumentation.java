@@ -127,9 +127,14 @@ public final class CatalogInstrumentation extends Instrumentation {
             }
             check(playing[0],"On-device video decoding and playback advances");results.putBoolean("local_video_playback",true);
             boolean[] controls={true};runOnMainSync(()->{androidx.media3.ui.PlayerView player=playback.findViewById(android.R.id.content).findViewWithTag("video-player");controls[0]=player.getUseController();});check(!controls[0],"Playback controls disabled");
-            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_DOWN);waitForChannel(playback,"1");
+            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_UP);waitForChannel(playback,"1");
             check(bannerShows(playback,"Synthetic channel 1"),"Changing channel names the new one in the banner");
-            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_UP);waitForChannel(playback,"0");results.putBoolean("up_down_channel_switching",true);
+            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_DOWN);waitForChannel(playback,"0");results.putBoolean("up_down_channel_switching",true);
+            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_UP);
+            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_UP);
+            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_DPAD_DOWN);
+            waitForChannel(playback,"1");
+            results.putBoolean("rapid_channel_switching",true);
             results.putBoolean("channel_name_banner",true);
             boolean[] quiet={false};
             for(int attempt=0;attempt<100&&!quiet[0];attempt++){SystemClock.sleep(50);runOnMainSync(()->quiet[0]=((android.view.View)playback.findViewById(android.R.id.content).findViewWithTag("playback-status")).getVisibility()!=android.view.View.VISIBLE);}
@@ -196,7 +201,7 @@ public final class CatalogInstrumentation extends Instrumentation {
         old.execSQL("CREATE TABLE meta(id TEXT PRIMARY KEY,value TEXT NOT NULL)");old.execSQL("INSERT INTO meta VALUES('source',?)",new Object[]{Vault.encrypt(source)});old.setVersion(1);old.close();
         try(Catalog upgraded=new Catalog(getTargetContext(),name)){
             check(upgraded.count()==1,"Schema migration keeps channels");check(upgraded.source().json().equals(source.json()),"Schema migration keeps encrypted login");
-            check(upgraded.getReadableDatabase().getVersion()==4,"Schema upgraded to version 4");
+            check(upgraded.getReadableDatabase().getVersion()==6,"Schema upgraded to version 6");
         }finally{getTargetContext().deleteDatabase(name);}
     }
 }

@@ -181,7 +181,7 @@ final class LibraryDeviceChecks {
         d.execSQL("INSERT INTO playback_progress VALUES('movie:7',4242,600000,1)");
         d.setVersion(3);d.close();
         try(Catalog upgraded=new Catalog(test.getTargetContext(),file)){
-            check(upgraded.getReadableDatabase().getVersion()==4,"Schema upgraded to version 4");
+            check(upgraded.getReadableDatabase().getVersion()==6,"Schema upgraded to version 6");
             List<LibraryItem> rows=upgraded.mediaPage("movie","","",0);
             check(rows.size()==1&&rows.get(0).name.equals("Kept film"),"v3 migration keeps saved films");
             check(rows.get(0).image.isEmpty(),"v3 migration adds an empty poster column");

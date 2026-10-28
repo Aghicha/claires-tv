@@ -12,7 +12,7 @@ final class Catalog extends SQLiteOpenHelper {
     static final int PAGE=250;
     record Group(String id,String name,int count) { @Override public String toString(){return name+"  ·  "+count;} }
     Catalog(Context c) { this(c,"catalog.db"); }
-    Catalog(Context c,String name) { super(c,name,null,4); setWriteAheadLoggingEnabled(true); }
+    Catalog(Context c,String name) { super(c,name,null,6); setWriteAheadLoggingEnabled(true); }
     @Override public void onCreate(SQLiteDatabase d) {
         d.execSQL("CREATE TABLE channels(id TEXT PRIMARY KEY,name TEXT NOT NULL,category TEXT NOT NULL,url TEXT NOT NULL,position INTEGER NOT NULL)");
         d.execSQL("CREATE INDEX channels_category ON channels(category,position)");

@@ -17,15 +17,18 @@ import java.util.concurrent.*;
 public final class PlayerActivity extends Activity {
     private static final String PLAYER_AGENT="VLC/3.0.20 LibVLC/3.0.20";
     private static final int BANNER_MS=4000, RETRIES=3;
+    private static final long STALL_MS=20000;
     private ExoPlayer player;
     private PlayerView view;
     private TextView banner,status;
     private Runnable hideBanner;
+    private Runnable retryTask,stallTask;
     private int retries;
     private Catalog catalog;
     private final ExecutorService io=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler(Looper.getMainLooper());
-    private volatile String channelId;
+    private String channelId;
+    private String requestedChannelId;
     private int switchVersion;
     private boolean active;
     private long lastChange;
@@ -36,6 +39,7 @@ public final class PlayerActivity extends Activity {
         super.onCreate(state);getWindow().getDecorView().setSystemUiVisibility(5894);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         catalog=new Catalog(getApplicationContext(),BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)?"benchmark.db":"catalog.db");
         channelId=getIntent().getStringExtra("channel_id");
+        requestedChannelId=channelId;
         progressKey=getIntent().getStringExtra("content_key");onDemand=progressKey!=null;
         FrameLayout root=new FrameLayout(this);view=new PlayerView(this);view.setTag("video-player");
         view.setUseController(onDemand);view.setControllerAutoShow(false);view.setKeepContentOnPlayerReset(true);view.setShowNextButton(false);view.setShowPreviousButton(false);
@@ -71,16 +75,23 @@ public final class PlayerActivity extends Activity {
             player.addListener(new Player.Listener(){
                 @Override public void onPlaybackStateChanged(int state){
                     if(state==Player.STATE_READY){
-                        retries=0;hideStatus();
+                        cancelStall();retries=0;hideStatus();
                         if(onDemand)android.util.Log.i("ClaireTV",progressKey.startsWith("episode:")?"episode_ready":"film_ready");
                     } else if(state==Player.STATE_BUFFERING){
-                        showStatus(retries>0?"Retrying the connection… ("+retries+" of "+RETRIES+")":"Fetching the stream…");
+                        if(!onDemand&&stallTask==null){
+                            int version=switchVersion;
+                            stallTask=()->{stallTask=null;if(active&&version==switchVersion&&player!=null&&player.getPlaybackState()==Player.STATE_BUFFERING)retryStream("Stream stalled.");};
+                            main.postDelayed(stallTask,STALL_MS);
+                        }
+                        if(retries>0)showStatus("Retrying the connection… ("+retries+" of "+RETRIES+")");
                     } else if(state==Player.STATE_ENDED){
+                        cancelStall();
                         showStatus(onDemand?"Finished. Press Back to return to the library.":"Stream ended. Up/Down changes channel; Back returns to the list.");
                         if(onDemand&&player!=null){long duration=player.getDuration();io.execute(()->catalog.savePlayback(progressKey,0,duration));}
                     }
                 }
                 @Override public void onPlayerError(PlaybackException error){
+                    cancelStall();
                     // The bare error code cannot tell "not in this subscription" (403) from "wrong container" (404).
                     int code=0;
                     for(Throwable t=error;t!=null;t=t.getCause())if(t instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException){code=((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)t).responseCode;break;}
@@ -88,8 +99,7 @@ public final class PlayerActivity extends Activity {
                     android.util.Log.w("ClaireTV","playback_error="+detail);
                     // A dropped connection is worth retrying quietly; a refused or missing stream is not.
                     if(recoverable(error,code)&&retries<RETRIES&&player!=null){
-                        retries++;showStatus("Connection lost. Retrying… ("+retries+" of "+RETRIES+")");
-                        main.postDelayed(()->{if(active&&player!=null){player.prepare();player.play();}},1200L*retries);
+                        retryStream("Connection lost.");
                         return;
                     }
                     showStatus("Stream could not play ("+detail+"). "+(onDemand?"Press Back to return to the library.":"Up/Down changes channel; Back returns to the list."));
@@ -106,10 +116,19 @@ public final class PlayerActivity extends Activity {
             ||e==PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
             ||e==PlaybackException.ERROR_CODE_IO_UNSPECIFIED;
     }
+    private void cancelStall(){if(stallTask!=null){main.removeCallbacks(stallTask);stallTask=null;}}
+    private void cancelRetry(){if(retryTask!=null){main.removeCallbacks(retryTask);retryTask=null;}}
+    private void retryStream(String reason){
+        if(retries>=RETRIES){showStatus("Stream stopped. Up/Down changes channel; Back returns to the list.");return;}
+        cancelRetry();retries++;showStatus(reason+" Retrying… ("+retries+" of "+RETRIES+")");
+        int version=switchVersion;
+        retryTask=()->{retryTask=null;if(active&&version==switchVersion&&player!=null){player.stop();player.prepare();player.play();}};
+        main.postDelayed(retryTask,1200L*retries);
+    }
     private void play(String url){
         try{
             if(!(BuildConfig.DEBUG&&"asset:///playback-test.mp4".equals(url)))Source.normalize(url);
-            retries=0;showBanner();showStatus("Fetching the stream…");
+            cancelRetry();cancelStall();retries=0;showBanner();showStatus("Fetching the stream…");
             player.setMediaItem(MediaItem.fromUri(url));player.prepare();player.play();
         }catch(Exception e){showStatus("Invalid stream address. Press Back to return to channels.");}
     }
@@ -118,16 +137,17 @@ public final class PlayerActivity extends Activity {
         int token=++switchVersion;String category=getIntent().getStringExtra("category"),search=getIntent().getStringExtra("search");
         io.execute(()->{
             try{
-                if(playbackSource==null)playbackSource=catalog.source();Source source=playbackSource;Channel next=catalog.neighbor(channelId,category==null?"":category,search==null?"":search,direction);
-                if(next==null||source==null)return;channelId=next.id;String url=source.play(next);
-                main.post(()->{if(!active||token!=switchVersion||isDestroyed())return;getIntent().putExtra("channel_id",next.id).putExtra("url",url).putExtra("name",next.name);play(url);});
+                if(playbackSource==null)playbackSource=catalog.source();Source source=playbackSource;
+                Channel next=catalog.neighbor(requestedChannelId,category==null?"":category,search==null?"":search,direction);
+                if(next==null||source==null)return;String url=source.play(next);requestedChannelId=next.id;
+                main.post(()->{if(!active||token!=switchVersion||isDestroyed())return;channelId=next.id;getIntent().putExtra("channel_id",next.id).putExtra("url",url).putExtra("name",next.name);play(url);});
             }catch(Exception e){main.post(()->{if(active&&token==switchVersion)showStatus("Could not change channel. Press Back to choose one from the list.");});}
         });
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event){
         int key=event.getKeyCode();
         if(!onDemand&&(key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)){
-            if(event.getAction()==KeyEvent.ACTION_DOWN&&(event.getRepeatCount()==0||SystemClock.elapsedRealtime()-lastChange>=180)){lastChange=SystemClock.elapsedRealtime();changeChannel(key==KeyEvent.KEYCODE_DPAD_UP?-1:1);}return true;
+            if(event.getAction()==KeyEvent.ACTION_DOWN&&(event.getRepeatCount()==0||SystemClock.elapsedRealtime()-lastChange>=180)){lastChange=SystemClock.elapsedRealtime();changeChannel(key==KeyEvent.KEYCODE_DPAD_UP?1:-1);}return true;
         }
         if(key==KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE){if(event.getAction()==KeyEvent.ACTION_DOWN&&player!=null){if(player.isPlaying())player.pause();else player.play();}return true;}
         if(onDemand&&(key==KeyEvent.KEYCODE_DPAD_CENTER||key==KeyEvent.KEYCODE_ENTER)&&!view.isControllerFullyVisible()){
@@ -140,7 +160,7 @@ public final class PlayerActivity extends Activity {
         return super.dispatchKeyEvent(event);
     }
     @Override public void onBackPressed(){if(onDemand&&view.isControllerFullyVisible()){view.hideController();return;}super.onBackPressed();}
-    @Override public void onStop(){active=false;++switchVersion;main.removeCallbacksAndMessages(null);if(player!=null){
+    @Override public void onStop(){active=false;++switchVersion;main.removeCallbacksAndMessages(null);retryTask=null;stallTask=null;requestedChannelId=channelId;if(player!=null){
         if(onDemand){long position=player.getCurrentPosition(),duration=player.getDuration();getIntent().putExtra("start_position",position);io.execute(()->catalog.savePlayback(progressKey,position,duration));}
         view.setPlayer(null);player.release();player=null;}super.onStop();}
     @Override public void onDestroy(){io.shutdown();Catalog close=catalog;new Thread(()->{try{io.awaitTermination(20,TimeUnit.SECONDS);}catch(InterruptedException ignored){}close.close();},"player-catalog-close").start();super.onDestroy();}

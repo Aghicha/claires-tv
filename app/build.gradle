@@ -2,7 +2,7 @@ plugins { id 'com.android.application' }
 android {
     namespace 'tv.local.fast'
     compileSdk 36
-    defaultConfig { applicationId 'tv.local.fast'; minSdk 26; targetSdk 34; versionCode 8; versionName '0.4'; testInstrumentationRunner 'tv.local.fast.CatalogInstrumentation' }
+    defaultConfig { applicationId 'tv.local.fast'; minSdk 26; targetSdk 34; versionCode 10; versionName '0.5'; testInstrumentationRunner 'tv.local.fast.CatalogInstrumentation' }
     buildTypes { release { minifyEnabled true; shrinkResources true; proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'); signingConfig signingConfigs.debug } }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
     buildFeatures { buildConfig true }
