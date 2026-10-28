@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- View tag keys: the poster a cell is currently loading, and the cell's cached child views. -->
+    <item name="poster_url" type="id" />
+    <item name="poster_cell" type="id" />
+</resources>

@@ -1,0 +1,19 @@
+# Local machine configuration — contains your own SDK path
+local.properties
+
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+captures/
+
+# Never commit signing material
+*.jks
+*.keystore
+keystore.properties
+
+# Editors / OS
+.idea/
+*.iml
+.DS_Store

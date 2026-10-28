@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shown while a poster loads, and kept for titles the provider supplies no artwork for. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#ff1c2922" />
+            <corners android:radius="4dp" />
+        </shape>
+    </item>
+    <item android:gravity="center" android:width="40dp" android:height="40dp">
+        <vector android:width="40dp" android:height="40dp" android:viewportWidth="24" android:viewportHeight="24">
+            <path
+                android:fillColor="#ff3c5a49"
+                android:pathData="M4,5h16a1,1 0 0 1 1,1v10a1,1 0 0 1 -1,1h-16a1,1 0 0 1 -1,-1v-10a1,1 0 0 1 1,-1zM5,7v8h14v-8zM10,9.2l4.5,2.3l-4.5,2.3z" />
+        </vector>
+    </item>
+</layer-list>
