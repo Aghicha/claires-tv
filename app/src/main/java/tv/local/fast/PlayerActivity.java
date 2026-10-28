@@ -11,6 +11,7 @@ import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
+import java.util.LinkedHashSet;
 import java.util.concurrent.*;
 
 @androidx.annotation.OptIn(markerClass=androidx.media3.common.util.UnstableApi.class)
@@ -23,6 +24,7 @@ public final class PlayerActivity extends Activity {
     private TextView banner,status;
     private Runnable hideBanner;
     private Runnable retryTask,stallTask;
+    private final LinkedHashSet<String> readyChannels=new LinkedHashSet<>();
     private int retries;
     private Catalog catalog;
     private final ExecutorService io=Executors.newSingleThreadExecutor();
@@ -76,6 +78,11 @@ public final class PlayerActivity extends Activity {
                 @Override public void onPlaybackStateChanged(int state){
                     if(state==Player.STATE_READY){
                         cancelStall();retries=0;hideStatus();
+                        if(!onDemand){
+                            readyChannels.add(channelId);
+                            if(readyChannels.size()>32)readyChannels.remove(readyChannels.iterator().next());
+                            android.util.Log.i("ClaireTV","ready_channel="+channelId);
+                        }
                         if(onDemand)android.util.Log.i("ClaireTV",progressKey.startsWith("episode:")?"episode_ready":"film_ready");
                     } else if(state==Player.STATE_BUFFERING){
                         if(!onDemand&&stallTask==null){
@@ -94,12 +101,20 @@ public final class PlayerActivity extends Activity {
                     cancelStall();
                     // The bare error code cannot tell "not in this subscription" (403) from "wrong container" (404).
                     int code=0;
-                    for(Throwable t=error;t!=null;t=t.getCause())if(t instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException){code=((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)t).responseCode;break;}
+                    String requestKind="unknown";
+                    for(Throwable t=error;t!=null;t=t.getCause())if(t instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException){
+                        var response=(androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)t;
+                        code=response.responseCode;
+                        String path=response.dataSpec.uri.getPath();
+                        requestKind=path!=null&&path.endsWith(".m3u8")?"playlist":path!=null&&(path.endsWith(".ts")||path.endsWith(".m4s"))?"segment":"other";
+                        break;
+                    }
                     String detail=error.getErrorCodeName()+(code!=0?", HTTP "+code:"");
-                    android.util.Log.w("ClaireTV","playback_error="+detail);
+                    android.util.Log.w("ClaireTV","playback_error="+detail+", channel="+channelId+", request="+requestKind);
                     // A dropped connection is worth retrying quietly; a refused or missing stream is not.
-                    if(recoverable(error,code)&&retries<RETRIES&&player!=null){
-                        retryStream("Connection lost.");
+                    boolean transientReturn=!onDemand&&code==403&&"playlist".equals(requestKind)&&readyChannels.contains(channelId);
+                    if((recoverable(error,code)||transientReturn)&&retries<RETRIES&&player!=null){
+                        retryStream(transientReturn?"Stream refused temporarily.":"Connection lost.");
                         return;
                     }
                     showStatus("Stream could not play ("+detail+"). "+(onDemand?"Press Back to return to the library.":"Up/Down changes channel; Back returns to the list."));
@@ -129,6 +144,7 @@ public final class PlayerActivity extends Activity {
         try{
             if(!(BuildConfig.DEBUG&&"asset:///playback-test.mp4".equals(url)))Source.normalize(url);
             cancelRetry();cancelStall();retries=0;showBanner();showStatus("Fetching the stream…");
+            if(player.getMediaItemCount()>0)player.stop();
             player.setMediaItem(MediaItem.fromUri(url));player.prepare();player.play();
         }catch(Exception e){showStatus("Invalid stream address. Press Back to return to channels.");}
     }
@@ -140,7 +156,7 @@ public final class PlayerActivity extends Activity {
                 if(playbackSource==null)playbackSource=catalog.source();Source source=playbackSource;
                 Channel next=catalog.neighbor(requestedChannelId,category==null?"":category,search==null?"":search,direction);
                 if(next==null||source==null)return;String url=source.play(next);requestedChannelId=next.id;
-                main.post(()->{if(!active||token!=switchVersion||isDestroyed())return;channelId=next.id;getIntent().putExtra("channel_id",next.id).putExtra("url",url).putExtra("name",next.name);play(url);});
+                main.post(()->{if(!active||token!=switchVersion||isDestroyed())return;channelId=next.id;android.util.Log.i("ClaireTV","channel="+channelId+", direction="+direction+", source="+source.type);getIntent().putExtra("channel_id",next.id).putExtra("url",url).putExtra("name",next.name);play(url);});
             }catch(Exception e){main.post(()->{if(active&&token==switchVersion)showStatus("Could not change channel. Press Back to choose one from the list.");});}
         });
     }
