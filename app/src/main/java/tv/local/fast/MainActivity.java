@@ -174,7 +174,7 @@ public final class MainActivity extends Activity {
     private void play(Channel channel) {
         if(source==null)return;
         Intent intent=new Intent(this,PlayerActivity.class);intent.putExtra("url",source.play(channel));intent.putExtra("name",channel.name);
-        intent.putExtra("channel_id",channel.id);intent.putExtra("category",category);intent.putExtra("search",search);
+        intent.putExtra("channel_id",channel.id);intent.putExtra("category",category);intent.putExtra("search",search);intent.putExtra("source_type",source.type);
         intent.putExtra("benchmark",BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false));startActivity(intent);
     }
     private void toggleFavorite() {

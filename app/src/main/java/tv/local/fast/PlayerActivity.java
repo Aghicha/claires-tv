@@ -32,9 +32,12 @@ public final class PlayerActivity extends Activity {
     private String channelId;
     private String requestedChannelId;
     private int switchVersion;
+    private int playbackVersion;
     private boolean active;
     private long lastChange;
     private Source playbackSource;
+    private String sourceType;
+    private boolean preferHlsLive,hlsFallbackAttempted;
     private boolean onDemand;
     private String progressKey;
     @Override public void onCreate(Bundle state) {
@@ -42,6 +45,7 @@ public final class PlayerActivity extends Activity {
         catalog=new Catalog(getApplicationContext(),BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)?"benchmark.db":"catalog.db");
         channelId=getIntent().getStringExtra("channel_id");
         requestedChannelId=channelId;
+        sourceType=getIntent().getStringExtra("source_type");
         progressKey=getIntent().getStringExtra("content_key");onDemand=progressKey!=null;
         FrameLayout root=new FrameLayout(this);view=new PlayerView(this);view.setTag("video-player");
         view.setUseController(onDemand);view.setControllerAutoShow(false);view.setKeepContentOnPlayerReset(true);view.setShowNextButton(false);view.setShowPreviousButton(false);
@@ -70,7 +74,11 @@ public final class PlayerActivity extends Activity {
     private void showStatus(String text){status.setText(text);status.setVisibility(android.view.View.VISIBLE);}
     private void hideStatus(){status.setVisibility(android.view.View.GONE);}
     @Override public void onStart() {
-        super.onStart();active=true;
+        super.onStart();active=true;playbackVersion=switchVersion;
+        createPlayer();play(getIntent().getStringExtra("url"));view.hideController();view.requestFocus();
+        if(onDemand){long position=getIntent().getLongExtra("start_position",0);if(position>0)player.seekTo(position);}
+    }
+    private void createPlayer(){
             // Xtream panels commonly answer 406 on /movie and /series unless the agent looks like a media player.
             DefaultHttpDataSource.Factory http=new DefaultHttpDataSource.Factory().setUserAgent(PLAYER_AGENT).setConnectTimeoutMs(10000).setReadTimeoutMs(15000);
             player=new ExoPlayer.Builder(this).setMediaSourceFactory(new DefaultMediaSourceFactory(new androidx.media3.datasource.DefaultDataSource.Factory(this,http))).build();view.setPlayer(player);
@@ -98,6 +106,7 @@ public final class PlayerActivity extends Activity {
                     }
                 }
                 @Override public void onPlayerError(PlaybackException error){
+                    if(playbackVersion!=switchVersion)return;
                     cancelStall();
                     // The bare error code cannot tell "not in this subscription" (403) from "wrong container" (404).
                     int code=0;
@@ -111,6 +120,13 @@ public final class PlayerActivity extends Activity {
                     }
                     String detail=error.getErrorCodeName()+(code!=0?", HTTP "+code:"");
                     android.util.Log.w("ClaireTV","playback_error="+detail+", channel="+channelId+", request="+requestKind);
+                    String url=getIntent().getStringExtra("url");
+                    if(!onDemand&&"xtream".equals(sourceType)&&!hlsFallbackAttempted&&url!=null&&url.endsWith(".ts")
+                        &&(code>=400||error.getErrorCodeName().startsWith("ERROR_CODE_PARSING"))){
+                        hlsFallbackAttempted=true;preferHlsLive=true;
+                        String hls=url.substring(0,url.length()-3)+".m3u8";
+                        getIntent().putExtra("url",hls);replaceLivePlayer();play(hls);return;
+                    }
                     // A dropped connection is worth retrying quietly; a refused or missing stream is not.
                     boolean transientReturn=!onDemand&&code==403&&"playlist".equals(requestKind)&&readyChannels.contains(channelId);
                     if((recoverable(error,code)||transientReturn)&&retries<RETRIES&&player!=null){
@@ -120,8 +136,12 @@ public final class PlayerActivity extends Activity {
                     showStatus("Stream could not play ("+detail+"). "+(onDemand?"Press Back to return to the library.":"Up/Down changes channel; Back returns to the list."));
                 }
             });
-            play(getIntent().getStringExtra("url"));view.hideController();view.requestFocus();
-            if(onDemand){long position=getIntent().getLongExtra("start_position",0);if(position>0)player.seekTo(position);}
+    }
+    private void replaceLivePlayer(){
+        cancelRetry();cancelStall();
+        view.setPlayer(null);
+        player.release();
+        createPlayer();
     }
     /** Network and timeout failures are worth another attempt; an HTTP refusal or a bad address is not. */
     private static boolean recoverable(PlaybackException error,int code){
@@ -137,7 +157,11 @@ public final class PlayerActivity extends Activity {
         if(retries>=RETRIES){showStatus("Stream stopped. Up/Down changes channel; Back returns to the list.");return;}
         cancelRetry();retries++;showStatus(reason+" Retrying… ("+retries+" of "+RETRIES+")");
         int version=switchVersion;
-        retryTask=()->{retryTask=null;if(active&&version==switchVersion&&player!=null){player.stop();player.prepare();player.play();}};
+        retryTask=()->{retryTask=null;if(active&&version==switchVersion&&player!=null){
+            if(onDemand)player.stop();
+            else {replaceLivePlayer();player.setMediaItem(MediaItem.fromUri(getIntent().getStringExtra("url")));}
+            player.prepare();player.play();
+        }};
         main.postDelayed(retryTask,1200L*retries);
     }
     private void play(String url){
@@ -150,13 +174,13 @@ public final class PlayerActivity extends Activity {
     }
     private void changeChannel(int direction){
         if(channelId==null||!active)return;
-        int token=++switchVersion;String category=getIntent().getStringExtra("category"),search=getIntent().getStringExtra("search");
+        int token=++switchVersion;boolean hls=preferHlsLive;String category=getIntent().getStringExtra("category"),search=getIntent().getStringExtra("search");
         io.execute(()->{
             try{
                 if(playbackSource==null)playbackSource=catalog.source();Source source=playbackSource;
                 Channel next=catalog.neighbor(requestedChannelId,category==null?"":category,search==null?"":search,direction);
-                if(next==null||source==null)return;String url=source.play(next);requestedChannelId=next.id;
-                main.post(()->{if(!active||token!=switchVersion||isDestroyed())return;channelId=next.id;android.util.Log.i("ClaireTV","channel="+channelId+", direction="+direction+", source="+source.type);getIntent().putExtra("channel_id",next.id).putExtra("url",url).putExtra("name",next.name);play(url);});
+                if(next==null||source==null)return;String url=hls?source.playHls(next):source.play(next);requestedChannelId=next.id;
+                main.post(()->{if(!active||token!=switchVersion||isDestroyed())return;playbackVersion=token;channelId=next.id;sourceType=source.type;hlsFallbackAttempted=false;android.util.Log.i("ClaireTV","channel="+channelId+", direction="+direction+", source="+source.type);getIntent().putExtra("channel_id",next.id).putExtra("url",url).putExtra("name",next.name);replaceLivePlayer();play(url);});
             }catch(Exception e){main.post(()->{if(active&&token==switchVersion)showStatus("Could not change channel. Press Back to choose one from the list.");});}
         });
     }

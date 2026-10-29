@@ -29,7 +29,8 @@ final class Source {
         catch(java.io.UnsupportedEncodingException impossible){throw new AssertionError(impossible);}
     }
     String api(String action) { return base()+"/player_api.php?username="+enc(user)+"&password="+enc(password)+"&action="+action; }
-    String play(Channel c) { return type.equals("m3u") ? c.url : base()+"/live/"+enc(user)+"/"+enc(password)+"/"+enc(c.id)+".m3u8"; }
+    String play(Channel c) { return type.equals("m3u") ? c.url : base()+"/live/"+enc(user)+"/"+enc(password)+"/"+enc(c.id)+".ts"; }
+    String playHls(Channel c) { return type.equals("m3u") ? c.url : base()+"/live/"+enc(user)+"/"+enc(password)+"/"+enc(c.id)+".m3u8"; }
     String playLibrary(String kind,String id,String extension){
         if(!type.equals("xtream"))throw new IllegalArgumentException("Films and Series require an Xtream source.");
         if(!kind.equals("movie")&&!kind.equals("episode"))throw new IllegalArgumentException("Unknown playback type.");

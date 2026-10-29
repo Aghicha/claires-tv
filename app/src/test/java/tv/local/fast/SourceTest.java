@@ -2,7 +2,7 @@ package tv.local.fast;
 import org.junit.Test;
 import static org.junit.Assert.*;
 public class SourceTest {
-    @Test public void encodesAccountComponents() {Source s=new Source("xtream","https://example.com/","a b&c","p/a?ss");assertEquals("https://example.com/player_api.php?username=a%20b%26c&password=p%2Fa%3Fss&action=get_live_streams",s.api("get_live_streams"));assertEquals("https://example.com/live/a%20b%26c/p%2Fa%3Fss/42.m3u8",s.play(new Channel("42","Name","1","",false)));}
+    @Test public void encodesAccountComponents() {Source s=new Source("xtream","https://example.com/","a b&c","p/a?ss");assertEquals("https://example.com/player_api.php?username=a%20b%26c&password=p%2Fa%3Fss&action=get_live_streams",s.api("get_live_streams"));Channel c=new Channel("42","Name","1","",false);assertEquals("https://example.com/live/a%20b%26c/p%2Fa%3Fss/42.ts",s.play(c));assertEquals("https://example.com/live/a%20b%26c/p%2Fa%3Fss/42.m3u8",s.playHls(c));}
     @Test(expected=IllegalArgumentException.class) public void rejectsLocalFile(){new Source("m3u","file:///data/private","","");}
     @Test(expected=IllegalArgumentException.class) public void rejectsUserInfo(){new Source("m3u","https://user:pass@example.com/list","","");}
     @Test(expected=IllegalArgumentException.class) public void requiresCredentials(){new Source("xtream","https://example.com","","");}
