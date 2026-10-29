@@ -94,6 +94,9 @@ final class Catalog extends SQLiteOpenHelper {
         }
         return list;
     }
+    Channel channel(String id) {
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT c.id,c.name,c.category,c.url,f.id IS NOT NULL FROM channels c LEFT JOIN favorites f ON c.id=f.id WHERE c.id=?",new String[]{id})){return c.moveToFirst()?readChannel(c):null;}
+    }
     Channel neighbor(String id,String category,String search,int direction) {
         Filter f=filter(category,search);boolean forwards=direction>0;
         String projection="SELECT c.id,c.name,c.category,c.url,f.id IS NOT NULL FROM channels c LEFT JOIN favorites f ON c.id=f.id WHERE "+f.where;

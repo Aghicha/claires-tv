@@ -69,6 +69,7 @@ public final class MainActivity extends Activity {
     private void shell() {
         setup=false;root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(24),dp(16),dp(24),dp(16));root.setBackgroundColor(BG);setContentView(root);
         TvUi ui=new TvUi(this);LinearLayout top=ui.header("Live TV",()->{},()->openLibrary("movie"),()->openLibrary("series"));
+        Button f1=button("F1 View",()->{if(source!=null)startActivity(new Intent(this,F1Activity.class).putExtra("benchmark",BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)));});f1.setTag("nav-F1 View");top.addView(f1);
         refresh=button("Settings",()->{});refresh.setOnClickListener(v->{PopupMenu menu=new PopupMenu(this,refresh);menu.getMenu().add("Refresh live TV");menu.getMenu().add("Source");menu.setOnMenuItemClickListener(item->{if(item.getTitle().equals("Source"))showSetup();else if(source!=null&&!importing)refreshSource(source,false);return true;});menu.show();});top.addView(refresh);root.addView(top);
         status=text("",14,MUTED);status.setMinHeight(dp(36));status.setVisibility(View.GONE);root.addView(status);
         body=new LinearLayout(this);root.addView(body,new LinearLayout.LayoutParams(-1,0,1));
