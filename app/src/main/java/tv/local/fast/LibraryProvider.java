@@ -11,16 +11,38 @@ final class LibraryProvider {
     static int refresh(Catalog catalog,Source source,String kind,java.util.function.IntConsumer progress) throws Exception{
         if(!source.type.equals("xtream"))throw new IOException("Films and Series need an Xtream source. Your M3U source remains available in Live TV.");
         if(!kind.equals("movie")&&!kind.equals("series"))throw new IllegalArgumentException("Unknown library.");
-        SQLiteDatabase d=catalog.getWritableDatabase();d.beginTransaction();
-        try{
-            d.delete("media_items","kind=?",new String[]{kind});d.delete("media_groups","kind=?",new String[]{kind});
-            importGroups(d,source,kind);
-            int count=importItems(d,source,kind,progress);
-            ContentValues status=new ContentValues();status.put("kind",kind);status.put("updated",System.currentTimeMillis());d.insertWithOnConflict("media_status",null,status,SQLiteDatabase.CONFLICT_REPLACE);
-            d.execSQL("DELETE FROM media_favorites WHERE kind=? AND id NOT IN (SELECT id FROM media_items WHERE kind=?)",new Object[]{kind,kind});
-            d.delete("media_cache","kind=?",new String[]{kind});
-            d.setTransactionSuccessful();return count;
-        }finally{d.endTransaction();}
+        long started=android.os.SystemClock.elapsedRealtime();
+        try(ImportStage stage=new ImportStage(catalog)){
+            SQLiteDatabase incoming=stage.database();
+            incoming.execSQL("CREATE TABLE media_items(kind TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,category TEXT NOT NULL,extension TEXT NOT NULL,summary TEXT NOT NULL,position INTEGER NOT NULL,image TEXT NOT NULL,PRIMARY KEY(kind,id))");
+            incoming.execSQL("CREATE TABLE media_groups(kind TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(kind,id))");
+            incoming.beginTransaction();int count;long groupsDone,itemsDone;
+            try{
+                importGroups(incoming,source,kind);groupsDone=android.os.SystemClock.elapsedRealtime();
+                count=importItems(incoming,source,kind,progress);itemsDone=android.os.SystemClock.elapsedRealtime();
+                incoming.setTransactionSuccessful();
+            }finally{incoming.endTransaction();}
+            progress.accept(-1);
+            SQLiteDatabase d=catalog.getWritableDatabase();stage.attach(d);
+            try{
+                d.beginTransaction();
+                try{
+                    d.delete("media_items","kind=?",new String[]{kind});d.delete("media_groups","kind=?",new String[]{kind});
+                    d.execSQL("INSERT INTO media_items SELECT * FROM imported.media_items");
+                    d.execSQL("INSERT INTO media_groups SELECT * FROM imported.media_groups");
+                    ContentValues status=new ContentValues();status.put("kind",kind);status.put("updated",System.currentTimeMillis());d.insertWithOnConflict("media_status",null,status,SQLiteDatabase.CONFLICT_REPLACE);
+                    d.execSQL("DELETE FROM media_favorites WHERE kind=? AND id NOT IN (SELECT id FROM media_items WHERE kind=?)",new Object[]{kind,kind});
+                    d.delete("media_cache","kind=?",new String[]{kind});d.setTransactionSuccessful();
+                }finally{d.endTransaction();}
+            }finally{d.execSQL("DETACH DATABASE imported");}
+            android.util.Log.i("ClaireTV","library_refresh kind="+kind+" titles="+count+" categories_ms="+(groupsDone-started)+" download_import_ms="+(itemsDone-groupsDone)+" apply_ms="+(android.os.SystemClock.elapsedRealtime()-itemsDone));
+            return count;
+        }
+    }
+    private static boolean numericId(String value){
+        if(value.isEmpty())return false;
+        for(int i=0;i<value.length();i++)if(value.charAt(i)<'0'||value.charAt(i)>'9')return false;
+        return true;
     }
     private static String scalar(JsonReader reader) throws IOException{
         if(reader.peek()==JsonToken.NULL){reader.nextNull();return "";}
@@ -41,12 +63,16 @@ final class LibraryProvider {
     }
     static int importItems(SQLiteDatabase d,Source source,String kind,java.util.function.IntConsumer progress) throws Exception{
         String action=kind.equals("movie")?"get_vod_streams":"get_series";
-        try(Provider.Response r=new Provider.Response(source.api(action),Provider.CATALOG_BYTES)){return readItems(d,r.reader,kind,progress);}
+        try(Provider.Response r=new Provider.Response(source.api(action),Provider.CATALOG_BYTES)){return readItems(d,r.reader,kind,progress,false);}
     }
     static int readItems(SQLiteDatabase d,Reader input,String kind,java.util.function.IntConsumer progress) throws Exception{
-        try(JsonReader j=new JsonReader(input);SQLiteStatement row=d.compileStatement("INSERT OR REPLACE INTO media_items(kind,id,name,category,extension,summary,position,image) VALUES(?,?,?,?,?,?,?,?)")){
+        return readItems(d,input,kind,progress,false);
+    }
+    private static int readItems(SQLiteDatabase d,Reader input,String kind,java.util.function.IntConsumer progress,boolean staging) throws Exception{
+        String sql=staging?"INSERT OR REPLACE INTO refresh_items(id,name,category,extension,summary,position,image) VALUES(?,?,?,?,?,?,?)":"INSERT OR REPLACE INTO media_items(kind,id,name,category,extension,summary,position,image) VALUES(?,?,?,?,?,?,?,?)";
+        try(JsonReader j=new JsonReader(input);SQLiteStatement row=d.compileStatement(sql)){
             if(j.peek()!=JsonToken.BEGIN_ARRAY)throw new IOException("The provider did not return this library. Try Refresh, or check your subscription.");
-            j.beginArray();int count=0;while(j.hasNext()){
+            j.beginArray();int count=0;long insertNanos=0;while(j.hasNext()){
                 if(Thread.currentThread().isInterrupted())throw new InterruptedIOException();
                 String id="",name="",category="Other",extension="mp4",image="";JSONObject summary=new JSONObject();j.beginObject();
                 while(j.hasNext()){
@@ -61,10 +87,10 @@ final class LibraryProvider {
                             String value=scalar(j);if(value.length()>8000)value=value.substring(0,8000);summary.put(key,value);break;
                         default:j.skipValue();
                     }
-                }j.endObject();if(!id.matches("[0-9]+"))continue;if(category.isEmpty())category="Other";if(extension.isEmpty())extension="mp4";
-                row.bindString(1,kind);row.bindString(2,id);row.bindString(3,name.isEmpty()?(kind.equals("movie")?"Film ":"Series ")+id:name);row.bindString(4,category);row.bindString(5,extension);row.bindString(6,summary.toString());row.bindLong(7,count++);row.bindString(8,Posters.clean(image));row.executeInsert();
+                }j.endObject();if(!numericId(id))continue;if(category.isEmpty())category="Other";if(extension.isEmpty())extension="mp4";
+                int column=1;if(!staging)row.bindString(column++,kind);row.bindString(column++,id);row.bindString(column++,name.isEmpty()?(kind.equals("movie")?"Film ":"Series ")+id:name);row.bindString(column++,category);row.bindString(column++,extension);row.bindString(column++,summary.toString());row.bindLong(column++,count++);row.bindString(column,Posters.clean(image));long insertStart=System.nanoTime();row.executeInsert();insertNanos+=System.nanoTime()-insertStart;
                 if(count%250==0)progress.accept(count);if(count>200000)throw new IOException("Library exceeds 200,000 titles.");
-            }j.endArray();return count;
+            }j.endArray();android.util.Log.i("ClaireTV","library_insert kind="+kind+" titles="+count+" sqlite_ms="+(insertNanos/1000000));return count;
         }
     }
     static LibraryData.Detail movie(Catalog catalog,Source source,LibraryItem item) throws Exception{

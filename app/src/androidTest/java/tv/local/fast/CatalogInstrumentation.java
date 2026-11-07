@@ -10,9 +10,60 @@ import java.util.*;
 
 @androidx.annotation.OptIn(markerClass=androidx.media3.common.util.UnstableApi.class)
 public final class CatalogInstrumentation extends Instrumentation {
-    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);start();}
+    private boolean refreshOnly;
+    @Override public void onCreate(Bundle arguments){super.onCreate(arguments);refreshOnly="true".equals(arguments.getString("refresh_test"));start();}
+    private void checkStagedRefresh() throws Exception {
+        android.content.Context ctx=getTargetContext();ctx.deleteDatabase("refresh-test.db");
+        Catalog c=new Catalog(ctx,"refresh-test.db");
+        java.net.ServerSocket server=new java.net.ServerSocket(0,4,java.net.InetAddress.getByName("127.0.0.1"));
+        java.util.concurrent.CountDownLatch waiting=new java.util.concurrent.CountDownLatch(1),release=new java.util.concurrent.CountDownLatch(1);
+        Thread provider=new Thread(()->{try{
+            for(int i=0;i<4;i++)try(java.net.Socket socket=server.accept()){
+                java.io.BufferedReader in=new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream()));String request=in.readLine(),line;while((line=in.readLine())!=null&&!line.isEmpty()){}
+                boolean categories=request.contains("categories");boolean vod=request.contains("vod");
+                if(vod&&!categories){waiting.countDown();release.await();}
+                String body=categories?"[{\"category_id\":\"a\",\"category_name\":\"Test\"}]":vod?"[{\"stream_id\":1,\"name\":\"New film\",\"category_id\":\"a\"}]":"[{\"stream_id\":2,\"name\":\"New channel\",\"category_id\":\"a\"}]";
+                byte[] bytes=body.getBytes(java.nio.charset.StandardCharsets.UTF_8);java.io.OutputStream out=socket.getOutputStream();out.write(("HTTP/1.1 200 OK\r\nContent-Length: "+bytes.length+"\r\nConnection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));out.write(bytes);out.flush();
+            }
+        }catch(Exception ignored){}});provider.start();
+        java.util.concurrent.ExecutorService pool=java.util.concurrent.Executors.newFixedThreadPool(2);
+        try{
+            SQLiteDatabase d=c.getWritableDatabase();d.execSQL("INSERT INTO media_items VALUES('movie','9','Old film','a','mp4','{}',0,'')");
+            Source src=new Source("xtream","http://127.0.0.1:"+server.getLocalPort(),"test","test");
+            java.util.concurrent.Future<Integer> refresh=pool.submit(()->LibraryProvider.refresh(c,src,"movie",n->{}));
+            check(waiting.await(10,java.util.concurrent.TimeUnit.SECONDS),"Fixture film download started");
+            java.util.concurrent.Future<?> writer=pool.submit(()->c.savePlayback("movie:1",120000,600000));
+            writer.get(3,java.util.concurrent.TimeUnit.SECONDS);
+            check(c.mediaCount("movie","","Old film")==1,"Old catalog remains visible during download");
+            release.countDown();check(refresh.get(20,java.util.concurrent.TimeUnit.SECONDS)==1,"Film import completed");
+            check(c.mediaCount("movie","","New film")==1,"New film installed");
+            check(c.mediaCount("movie",Catalog.CONTINUE,"")==1,"Continue watching finds film");
+            d.execSQL("INSERT INTO media_items VALUES('series','5','Test series','a','mp4','{}',0,'')");
+            c.savePlayback("episode:5:100",120000,600000);
+            check(c.mediaCount("series",Catalog.CONTINUE,"")==1,"Continue watching finds series by episode");
+            check(c.mediaPage("series",Catalog.CONTINUE,"",0).get(0).id.equals("5"),"Continue watching returns the correct series");
+            check(Provider.refresh(c,src,true)==1,"Live import completed");
+            check(c.count()==1,"New channel installed");
+            boolean failed=false;try{LibraryProvider.refresh(c,new Source("xtream","http://127.0.0.1:1","test","test"),"movie",n->{});}catch(Exception expected){failed=true;}
+            check(failed&&c.count()==1,"Failed import preserves catalog");
+            java.io.File dir=new java.io.File(ctx.getCacheDir(),"resource-test");dir.mkdirs();
+            java.io.File a=new java.io.File(dir,"a"),b=new java.io.File(dir,"b");
+            try(java.io.FileOutputStream out=new java.io.FileOutputStream(a)){out.write(new byte[80]);}
+            try(java.io.FileOutputStream out=new java.io.FileOutputStream(b)){out.write(new byte[80]);}
+            a.setLastModified(System.currentTimeMillis()-10000);b.setLastModified(System.currentTimeMillis()-5000);
+            Posters.trimDirectory(dir,10,100);check(!a.exists()&&b.exists(),"Poster cache enforces byte limit oldest first");
+            java.io.File old=new java.io.File(dir,"catalog-import-old.db"),recent=new java.io.File(dir,"catalog-import-new.db"),unrelated=new java.io.File(dir,"other.db");old.createNewFile();recent.createNewFile();unrelated.createNewFile();old.setLastModified(System.currentTimeMillis()-10000);
+            ImportStage.clearOld(dir,System.currentTimeMillis()-5000);check(!old.exists()&&recent.exists()&&unrelated.exists(),"Only old import files are cleaned");
+            b.delete();recent.delete();unrelated.delete();dir.delete();
+        }finally{release.countDown();pool.shutdownNow();server.close();c.close();ctx.deleteDatabase("refresh-test.db");}
+    }
     @Override public void onStart() {
         Bundle results=new Bundle();Catalog catalog=new Catalog(getTargetContext(),"benchmark.db");
+        if(refreshOnly){
+            try{checkStagedRefresh();results.putString("result","PASS staged refresh, concurrent writes, preservation, and continue watching");}
+            catch(Throwable t){results.putString("result","FAIL: "+t);}
+            finally{catalog.close();finish(0,results);}return;
+        }
         try {
             android.accessibilityservice.AccessibilityServiceInfo access=getUiAutomation().getServiceInfo();
             access.flags|=android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;getUiAutomation().setServiceInfo(access);

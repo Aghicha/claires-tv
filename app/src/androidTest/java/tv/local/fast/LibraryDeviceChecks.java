@@ -90,6 +90,20 @@ final class LibraryDeviceChecks {
         check(launched.get().getStringExtra("content_key").equals("episode:900:201"),"Episode resume key includes series");test.removeMonitor(monitor);
         test.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         await(test,()->list(browser)!=null&&list(browser).getCount()==2&&list(browser).getAdapter().getItem(0) instanceof LibraryItem,"Back returns from the series detail page to the grid");
+
+        // A part-watched series opens on the season it stopped on; its episode rows must stay clickable there.
+        launched.set(null);test.addMonitor(monitor);
+        test.runOnMainSync(()->{AbsListView l=list(browser);l.requestFocus();l.setSelection(1);});
+        await(test,()->list(browser).getSelectedItemPosition()==1,"Part-watched series selected");
+        openSelected(test,browser);
+        await(test,()->episodes(browser)!=null&&episodes(browser).getCount()==2,"Part-watched series opens on its resume season");
+        await(test,()->button(browser,"library-play").getText().toString().startsWith("Resume episode"),"Part-watched series offers to resume its episode");
+        test.runOnMainSync(()->{AbsListView l=episodes(browser);l.performItemClick(l.getChildAt(0),0,l.getAdapter().getItemId(0));});
+        await(test,()->launched.get()!=null,"An episode row plays on a part-watched series");
+        check(launched.get().getStringExtra("content_key").equals("episode:901:101"),"The clicked episode row is the one that plays");
+        check(launched.get().getIntExtra("episode_index",-1)==0&&launched.get().getStringArrayExtra("episode_ids").length==3,"Episode playback carries the running order for the next-episode offer");
+        test.removeMonitor(monitor);test.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        await(test,()->list(browser)!=null&&list(browser).getCount()==2,"Back returns from the part-watched series detail page");
         test.runOnMainSync(browser::finish);test.waitForIdleSync();
         Activity playback=test.startActivitySync(new Intent(test.getTargetContext(),PlayerActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra("benchmark",true).putExtra("url","asset:///playback-test.mp4").putExtra("content_key","movie:local-video").putExtra("start_position",1000L));
         await(test,()->{androidx.media3.ui.PlayerView view=playback.findViewById(android.R.id.content).findViewWithTag("video-player");return view.getPlayer()!=null&&view.getPlayer().getCurrentPosition()>1200&&view.getPlayer().getPlayerError()==null;},"On-demand playback honors resume seek");
@@ -150,6 +164,9 @@ final class LibraryDeviceChecks {
         check(catalog.resumeEpisode("900").isEmpty(),"A finished series has no episode to resume");
         check(catalog.mediaCount("movie",Catalog.CONTINUE,"Fixture film 0270")==1,"Continue watching still honours the title search");
         check(catalog.mediaCount("movie",Catalog.CONTINUE,"Fixture film 0001")==0,"Continue watching excludes unwatched titles from search");
+        // Leaves the second fixture series part-watched, which is the state the detail page checks below run against.
+        catalog.savePlayback("episode:901:102",90000,600000);
+        check(catalog.resumeEpisode("901").equals("102"),"The second fixture series resumes on its episode two");
     }
     private static void checkMigration(Instrumentation test,Source source) throws Exception{
         String file="library-migration.db";test.getTargetContext().deleteDatabase(file);SQLiteDatabase d=SQLiteDatabase.openOrCreateDatabase(test.getTargetContext().getDatabasePath(file),null);

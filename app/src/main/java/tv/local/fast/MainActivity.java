@@ -15,19 +15,20 @@ import java.util.concurrent.*;
 
 public final class MainActivity extends Activity {
     private static final int BG=0xff111916, SURFACE=0xff1c2922, INK=0xffedf4ef, MUTED=0xffb5c7bb, ACCENT=0xffb8dcc8;
-    private final ExecutorService io=Executors.newSingleThreadExecutor(), epg=Executors.newSingleThreadExecutor();
+    private final ExecutorService io=Executors.newSingleThreadExecutor(), epg=Executors.newSingleThreadExecutor(), refreshIo=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler(Looper.getMainLooper());
     private final long opened=SystemClock.elapsedRealtime();
     private Catalog catalog;
     private Source source;
     private LinearLayout root, body;
-    private TextView status, guide, selectedTitle, categoryTitle;
+    private TextView status, refreshStatus, guide, selectedTitle, categoryTitle;
     private ListView groupList, channelList;
     private Button refresh, categorySearch;
     private Rows channels;
     private String category="",search="",groupSearch="",movingGroup=null;
     private int offset=0,queryVersion=0,guideVersion=0;
     private boolean importing=false,setup=false,reported=false;
+    private long liveRevision;
     private Runnable guideTask;
     private Future<?> guideRequest;
     private Channel selected;
@@ -42,12 +43,20 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         getWindow().getDecorView().setSystemUiVisibility(5894);
         catalog=new Catalog(getApplicationContext(),BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)?"benchmark.db":"catalog.db");
-        shell();
+        shell();liveRevision=RefreshJobs.revision("live");
         io.execute(()->{
-            try {Source saved=catalog.source();post(()->{source=saved;if(saved==null)showSetup();else loadGroups(true);});}
+            try {Source saved=catalog.source();post(()->{source=saved;if(saved==null||getIntent().getBooleanExtra("open_settings",false))showSetup();else loadGroups(true);});}
             catch(Exception e){post(()->{notice("Saved source could not be opened. Enter your source again.");showSetup();});}
         });
     }
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);if(intent.getBooleanExtra("nav_focus",false)){View nav=root.findViewWithTag("nav-Live TV");if(nav!=null)nav.requestFocus();}}
+    private final Runnable refreshStatusPoll=new Runnable(){public void run(){
+        if(isDestroyed()||isFinishing())return;
+        if(refreshStatus!=null){String value=RefreshJobs.status();refreshStatus.setText(value);refreshStatus.setVisibility(value.isEmpty()?View.GONE:View.VISIBLE);}
+        long revision=RefreshJobs.revision("live");
+        if(revision!=liveRevision){liveRevision=revision;if(!importing&&!setup)io.execute(()->{try{Source saved=catalog.source();post(()->{if(!setup){source=saved;loadGroups(false);}});}catch(Exception ignored){}});}
+        main.postDelayed(this,1000);
+    }};
     private void post(Runnable r) {main.post(()->{if(!isDestroyed()&&!isFinishing())r.run();});}
     private void notice(String message){if(importing){status.setText(message);status.setVisibility(View.VISIBLE);}else Toast.makeText(this,message,Toast.LENGTH_SHORT).show();}
     private int dp(int value){return Math.round(value*getResources().getDisplayMetrics().density);}
@@ -69,8 +78,9 @@ public final class MainActivity extends Activity {
     private void shell() {
         setup=false;root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(dp(24),dp(16),dp(24),dp(16));root.setBackgroundColor(BG);setContentView(root);
         TvUi ui=new TvUi(this);LinearLayout top=ui.header("Live TV",()->{},()->openLibrary("movie"),()->openLibrary("series"));
-        Button f1=button("F1 View",()->{if(source!=null)startActivity(new Intent(this,F1Activity.class).putExtra("benchmark",BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)));});f1.setTag("nav-F1 View");top.addView(f1);
-        refresh=button("Settings",()->{});refresh.setOnClickListener(v->{PopupMenu menu=new PopupMenu(this,refresh);menu.getMenu().add("Refresh live TV");menu.getMenu().add("Source");menu.setOnMenuItemClickListener(item->{if(item.getTitle().equals("Source"))showSetup();else if(source!=null&&!importing)refreshSource(source,false);return true;});menu.show();});top.addView(refresh);root.addView(top);
+        Button liveRefresh=button("Refresh",()->{if(source!=null&&!importing)refreshSource(source,false);});liveRefresh.setTag("live-refresh");top.addView(liveRefresh);
+        refresh=button("Settings",()->{});refresh.setOnClickListener(v->{PopupMenu menu=new PopupMenu(this,refresh);menu.getMenu().add("Source");menu.setOnMenuItemClickListener(item->{if(item.getTitle().equals("Source"))showSetup();else if(source!=null&&!importing)refreshSource(source,false);return true;});menu.show();});top.addView(refresh);ui.linkHeader(top);root.addView(top);
+        refreshStatus=text("",14,MUTED);refreshStatus.setVisibility(View.GONE);root.addView(refreshStatus);
         status=text("",14,MUTED);status.setMinHeight(dp(36));status.setVisibility(View.GONE);root.addView(status);
         body=new LinearLayout(this);root.addView(body,new LinearLayout.LayoutParams(-1,0,1));
         LinearLayout left=new LinearLayout(this);left.setOrientation(LinearLayout.VERTICAL);body.addView(left,new LinearLayout.LayoutParams(0,-1,27));
@@ -113,7 +123,7 @@ public final class MainActivity extends Activity {
         channelList.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){Channel c=channels.at(pos);if(c!=null)select(c);else{selected=null;selectedTitle.setText("Loading channel…");guide.setText("");channels.requestPage(pos/Catalog.PAGE);}}});
     }
     private void openLibrary(String kind){
-        Intent intent=new Intent(this,LibraryActivity.class).putExtra("kind",kind).putExtra("benchmark",BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false));startActivity(intent);
+        Intent intent=new Intent(this,LibraryActivity.class).putExtra("kind",kind).putExtra("nav_focus",true).putExtra("benchmark",BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false));startActivity(intent);
     }
     private void configureList(ListView list) {
         list.setDivider(new android.graphics.drawable.ColorDrawable(BG));list.setDividerHeight(dp(5));list.setCacheColorHint(BG);
@@ -221,11 +231,11 @@ public final class MainActivity extends Activity {
         });form.addView(save);if(source!=null)form.addView(button("Back to channels",()->{shell();loadGroups(true);}));address.requestFocus();
     }
     private void refreshSource(Source candidate,boolean replacing) {
-        if(importing)return;importing=true;shell();refresh.setEnabled(false);notice("Loading your live channel catalog… This first download depends on your provider.");
-        io.execute(()->{try {int count=Provider.refresh(catalog,candidate,replacing);post(()->{source=candidate;importing=false;refresh.setEnabled(true);status.setVisibility(View.GONE);category="";search="";offset=0;notice("Loaded "+count+" channels");loadGroups(true);});}
-            catch(Exception e){post(()->{importing=false;refresh.setEnabled(true);String message=e instanceof java.net.SocketTimeoutException?"Provider timed out. Check the address and try Refresh.":e instanceof java.io.IOException?e.getMessage():"Could not load channels. Check the source and account.";
+        if(importing)return;boolean browsing=source!=null&&!replacing&&!setup;importing=true;if(!browsing)shell();View liveRefresh=root.findViewWithTag("live-refresh");notice(browsing?"Refreshing live TV… You can keep browsing.":"Loading your live channel catalog… This first download depends on your provider.");
+        refreshIo.execute(()->{try {int count=RefreshJobs.live(getApplicationContext(),BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)?"benchmark.db":"catalog.db",candidate,replacing).get();post(()->{source=candidate;importing=false;status.setVisibility(View.GONE);if(!browsing){category="";search="";offset=0;}notice("Loaded "+count+" channels");loadGroups(!browsing);});}
+            catch(Exception e){post(()->{importing=false;String message=e instanceof java.net.SocketTimeoutException?"Provider timed out. Check the address and try Refresh.":e instanceof java.io.IOException?e.getMessage():"Could not load channels. Check the source and account.";
                 status.setVisibility(View.GONE);guide.setText("The previous saved catalog is kept when a refresh fails.");
-                new AlertDialog.Builder(this).setTitle("Channels could not load").setMessage(message).setPositiveButton("OK",null).show();if(source!=null)loadGroups(false);});}});
+                new AlertDialog.Builder(this).setTitle("Channels could not load").setMessage(RefreshJobs.error(e)).setPositiveButton("OK",null).show();if(source!=null)loadGroups(false);});}});
     }
     private final class Rows extends BaseAdapter {
         private final LinkedHashMap<Integer,List<Channel>> pages=new LinkedHashMap<>(8,.75f,true);
@@ -265,8 +275,11 @@ public final class MainActivity extends Activity {
         }
     }
     @Override public void onBackPressed() {if(movingGroup!=null){finishReorder(false);return;}if(setup&&source!=null){shell();loadGroups(true);}else super.onBackPressed();}
+    @Override protected void onStart(){super.onStart();main.removeCallbacks(refreshStatusPoll);main.post(refreshStatusPoll);}
+    @Override protected void onStop(){main.removeCallbacks(refreshStatusPoll);super.onStop();}
+    @Override public void onTrimMemory(int level){super.onTrimMemory(level);if(level>=android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW)Posters.trimMemory();}
     @Override public void onDestroy() {
-        main.removeCallbacksAndMessages(null);if(guideRequest!=null)guideRequest.cancel(true);io.shutdownNow();epg.shutdownNow();
-        Catalog toClose=catalog;new Thread(()->{try{io.awaitTermination(40,TimeUnit.SECONDS);epg.awaitTermination(40,TimeUnit.SECONDS);}catch(InterruptedException ignored){}toClose.close();},"catalog-close").start();super.onDestroy();
+        main.removeCallbacksAndMessages(null);if(guideRequest!=null)guideRequest.cancel(true);io.shutdownNow();epg.shutdownNow();refreshIo.shutdownNow();
+        Catalog toClose=catalog;new Thread(()->{try{io.awaitTermination(40,TimeUnit.SECONDS);epg.awaitTermination(40,TimeUnit.SECONDS);refreshIo.awaitTermination(40,TimeUnit.SECONDS);}catch(InterruptedException ignored){}toClose.close();},"catalog-close").start();super.onDestroy();
     }
 }

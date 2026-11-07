@@ -18,14 +18,14 @@ import static tv.local.fast.TvUi.*;
  */
 public final class LibraryActivity extends Activity {
     private static final int COLUMNS=5, POSTER_WIDTH=150, POSTER_HEIGHT=210;
-    private final ExecutorService io=Executors.newSingleThreadExecutor(),details=Executors.newSingleThreadExecutor();
+    private final ExecutorService io=Executors.newSingleThreadExecutor(),details=Executors.newSingleThreadExecutor(),refreshIo=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler(Looper.getMainLooper());
     private Catalog catalog;
     private Source source;
     private TvUi ui;
     private Posters posters;
     private LinearLayout root;
-    private TextView status;
+    private TextView status,refreshStatus;
     // browse
     private TextView groupHeading,itemHeading;
     private ListView groupList;
@@ -51,26 +51,40 @@ public final class LibraryActivity extends Activity {
     private LibraryData.Season season;
     private Future<?> catalogTask,detailTask;
     private int generation,pageVersion,detailVersion,restoreRow;
-    private boolean loading,renderingGroups,ignoreReorderRelease,detailMode;
+    private long movieRevision,seriesRevision;
+    private boolean loading,renderingGroups,ignoreReorderRelease,detailMode,initialNavigationFocus;
 
     @Override public void onCreate(Bundle state){
         super.onCreate(state);getWindow().getDecorView().setSystemUiVisibility(5894);ui=new TvUi(this);posters=Posters.get(this);
         catalog=new Catalog(getApplicationContext(),BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)?"benchmark.db":"catalog.db");
-        kind="series".equals(getIntent().getStringExtra("kind"))?"series":"movie";browse();showStatus("Opening saved library…");
+        movieRevision=RefreshJobs.revision("library:movie");seriesRevision=RefreshJobs.revision("library:series");kind="series".equals(getIntent().getStringExtra("kind"))?"series":"movie";initialNavigationFocus=getIntent().getBooleanExtra("nav_focus",false);browse();showStatus("Opening saved library…");
         io.execute(()->{try{Source saved=catalog.source();post(()->{source=saved;if(source==null)showStatus("Add your provider in Live TV → Settings → Source.");else openKind(kind,false);});}
             catch(Exception e){post(()->showStatus("Your saved source could not be opened. Return to Live TV → Settings → Source."));}});
     }
+    private final Runnable refreshStatusPoll=new Runnable(){public void run(){
+        if(isDestroyed()||isFinishing())return;
+        if(refreshStatus!=null){String value=RefreshJobs.status();refreshStatus.setText(value);refreshStatus.setVisibility(value.isEmpty()?View.GONE:View.VISIBLE);}
+        long movie=RefreshJobs.revision("library:movie"),series=RefreshJobs.revision("library:series");
+        boolean changed=kind!=null&&(kind.equals("movie")?movie!=movieRevision:series!=seriesRevision);
+        movieRevision=movie;seriesRevision=series;
+        if(changed&&!loading&&!detailMode&&source!=null){int token=generation;String requested=kind;
+            io.execute(()->{try{List<Catalog.Group> result=catalog.mediaGroups(requested);post(()->{if(token!=generation||detailMode)return;allGroups.clear();allGroups.addAll(result);renderGroups(category);loadTitles(false);});}catch(Exception ignored){}});
+        }
+        main.postDelayed(this,1000);
+    }};
     private void post(Runnable r){main.post(()->{if(!isDestroyed()&&!isFinishing())r.run();});}
     private void showStatus(String value){status.setText(value);status.setVisibility(View.VISIBLE);}
     private void toast(String value){Toast.makeText(this,value,Toast.LENGTH_SHORT).show();}
     private void cancelDetails(){++detailVersion;if(detailTask!=null)detailTask.cancel(true);}
-    private void live(){startActivity(new Intent(this,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("benchmark",benchmark()));finish();}
+    private void live(){startActivity(new Intent(this,MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("benchmark",benchmark()).putExtra("nav_focus",true));finish();}
+    private void openSettings(){startActivity(new Intent(this,MainActivity.class).putExtra("benchmark",benchmark()).putExtra("open_settings",true));}
     private boolean benchmark(){return BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false);}
 
     private LinearLayout shell(String activeNav){
         root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(ui.dp(24),ui.dp(16),ui.dp(24),ui.dp(16));root.setBackgroundColor(BG);setContentView(root);
         LinearLayout header=ui.header(activeNav,this::live,()->openKind("movie",false),()->openKind("series",false));
-        refresh=ui.button("Refresh",()->{if(!loading)openKind(kind,true);});refresh.setTag("library-refresh");header.addView(refresh);root.addView(header);
+        refresh=ui.button("Refresh",()->{if(!loading)refreshLibrary();});refresh.setTag("library-refresh");header.addView(refresh);Button settings=ui.button("Settings",this::openSettings);settings.setTag("settings");header.addView(settings);ui.linkHeader(header);root.addView(header);
+        refreshStatus=ui.text("",14,MUTED);refreshStatus.setVisibility(View.GONE);root.addView(refreshStatus);
         status=ui.text("",14,MUTED);status.setMinHeight(ui.dp(36));status.setVisibility(View.GONE);root.addView(status);
         return root;
     }
@@ -118,28 +132,51 @@ public final class LibraryActivity extends Activity {
         grid.setOnItemClickListener((p,v,pos,id)->{LibraryItem item=titles.at(pos);if(item!=null)openDetail(item);});
         grid.setOnItemLongClickListener((p,v,pos,id)->{LibraryItem item=titles.at(pos);if(item==null)return false;toggleFavorite(item);return true;});
     }
+    private void refreshLibrary(){
+        if(source==null||!source.type.equals("xtream"))return;
+        String requestKind=kind;int token=generation;loading=true;
+        showStatus("Refreshing " + (kind.equals("movie")?"films":"series") + "… You can keep browsing.");
+        catalogTask=refreshIo.submit(()->{
+            try{
+                RefreshJobs.library(getApplicationContext(),benchmark()?"benchmark.db":"catalog.db",source,requestKind,count->post(()->{
+                    if(token==generation&&!detailMode)showStatus(count<0?"Updating your saved catalog… You can keep browsing.":"Refreshing " + count + " titles… You can keep browsing.");
+                })).get();
+                List<Catalog.Group> result=catalog.mediaGroups(requestKind);
+                post(()->{if(token!=generation)return;loading=false;
+                    allGroups.clear();allGroups.addAll(result);
+                    if(!detailMode){status.setVisibility(View.GONE);renderGroups(category);loadTitles(false);}
+                });
+            }catch(Exception e){
+                android.util.Log.w("ClaireTV","library_refresh_failed kind="+requestKind+" cause="+e.getClass().getSimpleName());
+                post(()->{if(token!=generation)return;loading=false;
+                    if(!detailMode)showStatus(RefreshJobs.error(e)+" Your saved catalog is still available.");});
+            }
+        });
+    }
     private void openKind(String next,boolean force){
         if(source==null){showStatus("Add your source in Live TV → Settings → Source.");return;}
+        if(!force&&next.equals(kind)&&!allGroups.isEmpty())return;
+        View current=getCurrentFocus();boolean fromNavigation=initialNavigationFocus||(!next.equals(kind)&&current!=null&&current.getTag() instanceof String&&((String)current.getTag()).startsWith("nav-"));initialNavigationFocus=false;
         if(catalogTask!=null)catalogTask.cancel(true);cancelDetails();
         kind=next;category="";search="";groupSearch="";moving=null;selected=null;restoreRow=0;
-        int token=++generation;++pageVersion;browse();loading=true;refresh.setEnabled(false);
+        int token=++generation;++pageVersion;browse();if(fromNavigation){View nav=root.findViewWithTag("nav-"+(next.equals("movie")?"Films":"Series"));if(nav!=null)nav.requestFocus();}loading=true;
         allGroups.clear();groups.clear();groupAdapter.notifyDataSetChanged();// otherwise the other library's categories sit under the new heading
-        if(!source.type.equals("xtream")){loading=false;refresh.setEnabled(true);showStatus("Films and Series need an Xtream source. Your M3U source remains available in Live TV.");return;}
+        if(!source.type.equals("xtream")){loading=false;showStatus("Films and Series need an Xtream source. Your M3U source remains available in Live TV.");return;}
         showStatus("Opening saved "+(kind.equals("movie")?"films":"series")+"…");String requestKind=kind;
         catalogTask=io.submit(()->{
             try{
                 if(force||!catalog.mediaImported(requestKind)){
                     post(()->{if(token==generation)showStatus("Loading "+(requestKind.equals("movie")?"films":"series")+" from your provider…");});
-                    LibraryProvider.refresh(catalog,source,requestKind,count->post(()->{if(token==generation)showStatus("Loading "+count+" titles…");}));
+                    RefreshJobs.library(getApplicationContext(),benchmark()?"benchmark.db":"catalog.db",source,requestKind,count->post(()->{if(token==generation)showStatus(count<0?"Updating your saved catalog…":"Loading "+count+" titles…");})).get();
                 }
                 List<Catalog.Group> result=catalog.mediaGroups(requestKind);
-                post(()->{if(token!=generation)return;loading=false;refresh.setEnabled(true);status.setVisibility(View.GONE);
-                    allGroups.clear();allGroups.addAll(result);renderGroups(category);loadTitles(true);});
+                post(()->{if(token!=generation)return;loading=false;status.setVisibility(View.GONE);
+                    allGroups.clear();allGroups.addAll(result);renderGroups(category);loadTitles(!fromNavigation);});
             }catch(Exception e){
                 android.util.Log.w("ClaireTV","library_failed kind="+requestKind+" cause="+e.getClass().getSimpleName());
                 // The reason belongs in the status line: loadSavedAfterFailure repaints the rest of the screen.
-                String reason=e instanceof java.io.IOException&&e.getMessage()!=null?e.getMessage():"Check the source and subscription, then try Refresh.";
-                post(()->{if(token!=generation)return;loading=false;refresh.setEnabled(true);showStatus(reason+" Your saved catalog is kept; use Refresh to retry.");loadSavedAfterFailure(requestKind,token);});
+                String reason=RefreshJobs.error(e);
+                post(()->{if(token!=generation)return;loading=false;showStatus(reason+" Your saved catalog is kept; use Refresh to retry.");loadSavedAfterFailure(requestKind,token);});
             }
         });
     }
@@ -157,7 +194,7 @@ public final class LibraryActivity extends Activity {
                 itemHeading.setText((kind.equals("movie")?"Films":"Series")+(count>0?"  ·  "+count:""));
                 if(count==0&&filter.equals(Catalog.CONTINUE))showStatus("Nothing to continue yet. A film or episode you stop partway through appears here.");
                 else if(count==0)showStatus("No matching titles. Try another category or search; if the library is empty your provider may not include it.");
-                else status.setVisibility(View.GONE);
+                else if(!loading)status.setVisibility(View.GONE);
                 if(focus)grid.requestFocus();
             });
         }catch(Exception e){post(()->toast("Could not read saved titles. Try Refresh."));}});
@@ -169,7 +206,7 @@ public final class LibraryActivity extends Activity {
         groupList.setSelection(pos);groupList.post(()->renderingGroups=false);
     }
     private void chooseGroup(int position){
-        if(position<0||position>=groups.size()||loading)return;
+        if(position<0||position>=groups.size())return;
         String id=groups.get(position).id();
         if(!category.equals(id)){category=id;restoreRow=0;loadTitles(false);}
     }
@@ -195,7 +232,7 @@ public final class LibraryActivity extends Activity {
         column.addView(page,new LinearLayout.LayoutParams(-1,0,1));
 
         // A film can spend the whole page on its description; a series must leave room for its episodes.
-        int art=movie?300:210;
+        int art=movie?300:140;
         LinearLayout top=new LinearLayout(this);
         page.addView(top,movie?new LinearLayout.LayoutParams(-1,0,1):new LinearLayout.LayoutParams(-1,ui.dp(art)));
         detailPoster=new ImageView(this);detailPoster.setTag("library-poster");detailPoster.setScaleType(ImageView.ScaleType.FIT_START);
@@ -252,18 +289,17 @@ public final class LibraryActivity extends Activity {
         watch.setText("Watch first episode");watch.setEnabled(true);
 
         detailExtra.removeAllViews();
+        // One 48dp row carries the seasons and the search button: the episode list needs every remaining pixel.
         LinearLayout seasonHeader=new LinearLayout(this);seasonHeader.setGravity(Gravity.CENTER_VERTICAL);
-        seasonHeader.addView(ui.text("Seasons",15,MUTED),new LinearLayout.LayoutParams(0,ui.dp(44),1));
+        HorizontalScrollView seasonScroll=new HorizontalScrollView(this);seasonScroll.setHorizontalScrollBarEnabled(false);
+        seasonRow=new LinearLayout(this);seasonRow.setTag("library-seasons");seasonScroll.addView(seasonRow);
+        seasonHeader.addView(seasonScroll,new LinearLayout.LayoutParams(0,ui.dp(48),1));
         Button episodeSearchButton=ui.button("Search episodes",()->TvUi.searchDialog(this,root,"Search episodes","Episode title",episodeSearch,value->{
             episodeSearch=value;filterEpisodes();episodeList.requestFocus();}));
         episodeSearchButton.setTag("library-episode-search");episodeSearchButton.setId(View.generateViewId());seasonHeader.addView(episodeSearchButton);detailExtra.addView(seasonHeader);
-
-        HorizontalScrollView seasonScroll=new HorizontalScrollView(this);seasonScroll.setHorizontalScrollBarEnabled(false);
-        seasonRow=new LinearLayout(this);seasonRow.setTag("library-seasons");seasonScroll.addView(seasonRow);detailExtra.addView(seasonScroll);
         for(LibraryData.Season s:data.seasons()){
             Button b=ui.button(s.name()+"  ·  "+s.episodes().size(),()->chooseSeason(s));b.setTag("season-"+s.id());b.setId(View.generateViewId());seasonRow.addView(b);
         }
-        detailExtra.addView(ui.text("Episodes",15,MUTED),new LinearLayout.LayoutParams(-1,ui.dp(40)));
         episodeList=new ListView(this);episodeList.setTag("library-episodes");ui.list(episodeList);episodeList.setId(View.generateViewId());
         episodeRows=new EpisodeRows();episodeList.setAdapter(episodeRows);
         detailExtra.addView(episodeList,new LinearLayout.LayoutParams(-1,0,1));
@@ -278,13 +314,13 @@ public final class LibraryActivity extends Activity {
             View b=seasonRow.getChildAt(i);b.setNextFocusDownId(episodeList.getId());b.setNextFocusUpId(favorite.getId());
         }
         episodeList.setNextFocusUpId(firstSeason);
+        episodeList.setOnItemClickListener((p,v,pos,id)->{LibraryData.Episode e=episodeRows.at(pos);if(e!=null){selectedEpisode=e;playEpisode(e);}});
+        episodeList.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}
+            public void onItemSelected(AdapterView<?> p,View v,int pos,long id){LibraryData.Episode e=episodeRows.at(pos);if(e!=null){selectedEpisode=e;watchLabel();}}});
         // Opening a part-watched series lands on the season holding the episode it stopped on.
         for(LibraryData.Season s:data.seasons())
             for(LibraryData.Episode e:s.episodes())
                 if(e.id().equals(resumeEpisodeId)){chooseSeason(s);return;}
-        episodeList.setOnItemClickListener((p,v,pos,id)->{LibraryData.Episode e=episodeRows.at(pos);if(e!=null){selectedEpisode=e;playEpisode(e);}});
-        episodeList.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}
-            public void onItemSelected(AdapterView<?> p,View v,int pos,long id){LibraryData.Episode e=episodeRows.at(pos);if(e!=null){selectedEpisode=e;watchLabel();}}});
         chooseSeason(data.seasons().get(0));
     }
     private void chooseSeason(LibraryData.Season chosen){
@@ -319,14 +355,27 @@ public final class LibraryActivity extends Activity {
     }
     private void playEpisode(LibraryData.Episode episode){
         if(activeSeries==null)return;
-        playMedia("episode",episode.id(),activeSeries.name+" · "+episode.title(),episode.extension(),"episode:"+activeSeries.id+":"+episode.id());
+        // The player offers the following episode when one finishes, so it travels with the whole running order.
+        List<LibraryData.Episode> all=new ArrayList<>();
+        if(series!=null)for(LibraryData.Season s:series.seasons())all.addAll(s.episodes());
+        String[] ids=new String[all.size()],names=new String[all.size()],extensions=new String[all.size()];int at=-1;
+        for(int i=0;i<all.size();i++){
+            LibraryData.Episode e=all.get(i);ids[i]=e.id();names[i]=e.number()+".  "+e.title();extensions[i]=e.extension();
+            if(e.id().equals(episode.id()))at=i;
+        }
+        LibraryItem show=activeSeries;int index=at;
+        playMedia("episode",episode.id(),show.name+" · "+episode.title(),episode.extension(),"episode:"+show.id+":"+episode.id(),
+            go->go.putExtra("series_id",show.id).putExtra("series_name",show.name)
+                .putExtra("episode_ids",ids).putExtra("episode_names",names).putExtra("episode_extensions",extensions).putExtra("episode_index",index));
     }
-    private void playMedia(String type,String id,String name,String ext,String key){
+    private void playMedia(String type,String id,String name,String ext,String key){playMedia(type,id,name,ext,key,null);}
+    private void playMedia(String type,String id,String name,String ext,String key,java.util.function.Consumer<Intent> extras){
         Source current=source;
         io.execute(()->{try{
             long resume=catalog.playbackPosition(key);String url=current.playLibrary(type,id,ext);
-            post(()->startActivity(new Intent(this,PlayerActivity.class).putExtra("url",url).putExtra("name",name)
-                .putExtra("content_key",key).putExtra("start_position",resume).putExtra("benchmark",benchmark())));
+            post(()->{Intent go=new Intent(this,PlayerActivity.class).putExtra("url",url).putExtra("name",name)
+                .putExtra("content_key",key).putExtra("start_position",resume).putExtra("benchmark",benchmark());
+                if(extras!=null)extras.accept(go);startActivity(go);});
         }catch(Exception e){post(()->toast("Could not open this title. Try another title or Refresh."));}});
     }
     private static String time(long millis){long minutes=millis/60000;return (minutes/60)+":"+String.format(Locale.ROOT,"%02d",minutes%60);}
@@ -405,7 +454,7 @@ public final class LibraryActivity extends Activity {
         public View getView(int position,View reuse,ViewGroup parent){
             TextView row=reuse instanceof TextView?(TextView)reuse:ui.text("",15,INK);
             LibraryData.Episode e=rows.get(position);
-            row.setPadding(ui.dp(12),ui.dp(8),ui.dp(12),ui.dp(8));row.setMinHeight(ui.dp(56));row.setMaxLines(2);row.setEllipsize(TextUtils.TruncateAt.END);
+            row.setPadding(ui.dp(12),ui.dp(6),ui.dp(12),ui.dp(6));row.setMinHeight(ui.dp(44));row.setSingleLine(true);row.setEllipsize(TextUtils.TruncateAt.END);
             row.setText(e.number()+".  "+e.title());return row;
         }
     }
@@ -417,6 +466,7 @@ public final class LibraryActivity extends Activity {
     }
     @Override public void onResume(){
         super.onResume();
+        if(!detailMode&&titles!=null)titles.notifyDataSetChanged();
         // Returning from playback: what is resumable has changed, so refresh it without rebuilding the page.
         if(detailMode&&selected!=null&&kind.equals("movie")){
             LibraryItem item=selected;int token=detailVersion;
@@ -434,9 +484,12 @@ public final class LibraryActivity extends Activity {
             }catch(Exception ignored){}});
         }
     }
+    @Override protected void onStart(){super.onStart();main.removeCallbacks(refreshStatusPoll);main.post(refreshStatusPoll);}
+    @Override protected void onStop(){main.removeCallbacks(refreshStatusPoll);posters.clearPending();super.onStop();}
+    @Override public void onTrimMemory(int level){super.onTrimMemory(level);if(level>=android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW)Posters.trimMemory();}
     @Override public void onDestroy(){
-        cancelDetails();main.removeCallbacksAndMessages(null);io.shutdownNow();details.shutdownNow();
-        Catalog close=catalog;new Thread(()->{try{io.awaitTermination(40,TimeUnit.SECONDS);details.awaitTermination(40,TimeUnit.SECONDS);}catch(InterruptedException ignored){}close.close();},"library-close").start();
+        cancelDetails();main.removeCallbacksAndMessages(null);io.shutdownNow();details.shutdownNow();refreshIo.shutdownNow();
+        Catalog close=catalog;new Thread(()->{try{io.awaitTermination(40,TimeUnit.SECONDS);details.awaitTermination(40,TimeUnit.SECONDS);refreshIo.awaitTermination(40,TimeUnit.SECONDS);}catch(InterruptedException ignored){}close.close();},"library-close").start();
         super.onDestroy();
     }
 }

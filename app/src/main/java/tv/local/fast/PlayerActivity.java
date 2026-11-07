@@ -18,7 +18,7 @@ import java.util.concurrent.*;
 public final class PlayerActivity extends Activity {
     private static final String PLAYER_AGENT="VLC/3.0.20 LibVLC/3.0.20";
     private static final int BANNER_MS=4000, RETRIES=3;
-    private static final long STALL_MS=20000;
+    private static final long STALL_MS=20000, NEXT_MS=60000;
     private ExoPlayer player;
     private PlayerView view;
     private TextView banner,status;
@@ -40,6 +40,12 @@ public final class PlayerActivity extends Activity {
     private boolean preferHlsLive,hlsFallbackAttempted;
     private boolean onDemand;
     private String progressKey;
+    private android.content.SharedPreferences preferences;
+    private Button nextEpisode;
+    private String[] episodeIds,episodeNames,episodeExtensions;
+    private int episodeIndex=-1;
+    private boolean nextDismissed,nextOffered;
+    private String seriesId,seriesName;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);getWindow().getDecorView().setSystemUiVisibility(5894);getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         catalog=new Catalog(getApplicationContext(),BuildConfig.DEBUG&&getIntent().getBooleanExtra("benchmark",false)?"benchmark.db":"catalog.db");
@@ -47,6 +53,10 @@ public final class PlayerActivity extends Activity {
         requestedChannelId=channelId;
         sourceType=getIntent().getStringExtra("source_type");
         progressKey=getIntent().getStringExtra("content_key");onDemand=progressKey!=null;
+        preferences=getSharedPreferences("playback",MODE_PRIVATE);
+        episodeIds=getIntent().getStringArrayExtra("episode_ids");episodeNames=getIntent().getStringArrayExtra("episode_names");
+        episodeExtensions=getIntent().getStringArrayExtra("episode_extensions");episodeIndex=getIntent().getIntExtra("episode_index",-1);
+        seriesId=getIntent().getStringExtra("series_id");seriesName=getIntent().getStringExtra("series_name");
         FrameLayout root=new FrameLayout(this);view=new PlayerView(this);view.setTag("video-player");
         view.setUseController(onDemand);view.setControllerAutoShow(false);view.setKeepContentOnPlayerReset(true);view.setShowNextButton(false);view.setShowPreviousButton(false);view.setShowSubtitleButton(onDemand);
         root.addView(view,new FrameLayout.LayoutParams(-1,-1));
@@ -59,6 +69,16 @@ public final class PlayerActivity extends Activity {
         status=new TextView(this);status.setTextColor(0xffd6e6dc);status.setTextSize(13);status.setPadding(dp(24),dp(7),dp(24),dp(7));
         status.setBackgroundColor(0x80101814);status.setVisibility(android.view.View.GONE);status.setTag("playback-status");
         root.addView(status,new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.START));
+        // An ended episode leaves one thing on screen: the way into the next one. It also sits above the
+        // transport controls whenever they are open, so skipping ahead never means waiting for the credits.
+        nextEpisode=new TvUi(this).button("Next episode",this::playNextEpisode);nextEpisode.setTag("next-episode");
+        nextEpisode.setVisibility(android.view.View.GONE);
+        FrameLayout.LayoutParams place=new FrameLayout.LayoutParams(-2,dp(52),Gravity.BOTTOM|Gravity.END);
+        place.setMargins(0,0,dp(32),dp(96));root.addView(nextEpisode,place);
+        view.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener)visibility->{
+            if(visibility==android.view.View.VISIBLE)showNextEpisode(false);
+            else if(!nextOffered)nextEpisode.setVisibility(android.view.View.GONE);
+        });
         setContentView(root);
     }
     private int dp(int value){return Math.round(value*getResources().getDisplayMetrics().density);}
@@ -82,7 +102,23 @@ public final class PlayerActivity extends Activity {
             // Xtream panels commonly answer 406 on /movie and /series unless the agent looks like a media player.
             DefaultHttpDataSource.Factory http=new DefaultHttpDataSource.Factory().setUserAgent(PLAYER_AGENT).setConnectTimeoutMs(10000).setReadTimeoutMs(15000);
             player=new ExoPlayer.Builder(this).setMediaSourceFactory(new DefaultMediaSourceFactory(new androidx.media3.datasource.DefaultDataSource.Factory(this,http))).build();view.setPlayer(player);
+            applyTrackPreferences();
             player.addListener(new Player.Listener(){
+                /** Whatever audio or subtitle track the viewer picks here is what the next title opens with. */
+                @Override public void onTrackSelectionParametersChanged(TrackSelectionParameters parameters){
+                    if(!onDemand)return;
+                    android.content.SharedPreferences.Editor edit=preferences.edit().putBoolean("text_off",parameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT));
+                    for(TrackSelectionOverride override:parameters.overrides.values()){
+                        String language=language(override);if(language==null)continue;
+                        if(override.getType()==C.TRACK_TYPE_AUDIO)edit.putString("audio_language",language);
+                        else if(override.getType()==C.TRACK_TYPE_TEXT)edit.putString("text_language",language);
+                    }
+                    edit.apply();
+                }
+                @Override public void onIsPlayingChanged(boolean playing){
+                    if(playing)getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
                 @Override public void onPlaybackStateChanged(int state){
                     if(state==Player.STATE_READY){
                         cancelStall();retries=0;hideStatus();
@@ -101,8 +137,9 @@ public final class PlayerActivity extends Activity {
                         if(retries>0)showStatus("Retrying the connection… ("+retries+" of "+RETRIES+")");
                     } else if(state==Player.STATE_ENDED){
                         cancelStall();
-                        showStatus(onDemand?"Finished. Press Back to return to the library.":"Stream ended. Up/Down changes channel; Back returns to the list.");
+                        showStatus(onDemand?(hasNextEpisode()?"Finished. Play the next episode, or press Back for the library.":"Finished. Press Back to return to the library."):"Stream ended. Up/Down changes channel; Back returns to the list.");
                         if(onDemand&&player!=null){long duration=player.getDuration();io.execute(()->catalog.savePlayback(progressKey,0,duration));}
+                        nextDismissed=false;showNextEpisode(true);
                     }
                 }
                 @Override public void onPlayerError(PlaybackException error){
@@ -137,6 +174,49 @@ public final class PlayerActivity extends Activity {
                 }
             });
     }
+    private void applyTrackPreferences(){
+        if(!onDemand||player==null)return;
+        player.setTrackSelectionParameters(player.getTrackSelectionParameters().buildUpon()
+            .setPreferredAudioLanguage(preferences.getString("audio_language",null))
+            .setPreferredTextLanguage(preferences.getString("text_language",null))
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT,preferences.getBoolean("text_off",false)).build());
+    }
+    private static String language(TrackSelectionOverride override){
+        for(int index:override.trackIndices){String language=override.mediaTrackGroup.getFormat(index).language;if(language!=null)return language;}
+        return null;
+    }
+    private boolean hasNextEpisode(){return episodeIds!=null&&episodeNames!=null&&episodeExtensions!=null&&episodeIndex>=0&&episodeIndex+1<episodeIds.length;}
+    /** Offered over the closing minute rather than after the credits, which is where a viewer gives up and leaves. */
+    private final Runnable offerNext=new Runnable(){public void run(){
+        if(!active||player==null)return;
+        long duration=player.getDuration();
+        if(duration>0&&duration-player.getCurrentPosition()<=NEXT_MS)showNextEpisode(true);
+        main.postDelayed(this,1000);
+    }};
+    /** Claimed means the episode is over: the button takes focus and stays. Otherwise it only accompanies the controls. */
+    private void showNextEpisode(boolean claimFocus){
+        if(!hasNextEpisode()||(nextDismissed&&claimFocus))return;
+        nextOffered|=claimFocus;
+        nextEpisode.setText("Next  ·  "+episodeNames[episodeIndex+1]);nextEpisode.setVisibility(android.view.View.VISIBLE);
+        if(claimFocus)nextEpisode.requestFocus();
+    }
+    private void playNextEpisode(){
+        if(!hasNextEpisode())return;
+        int next=episodeIndex+1;String id=episodeIds[next],extension=episodeExtensions[next],name=seriesName+" · "+episodeNames[next];
+        nextEpisode.setVisibility(android.view.View.GONE);view.requestFocus();showStatus("Opening the next episode…");
+        io.execute(()->{
+            try{
+                if(playbackSource==null)playbackSource=catalog.source();
+                Source source=playbackSource;if(source==null)throw new IllegalStateException("No saved source.");
+                String url=source.playLibrary("episode",id,extension);
+                main.post(()->{if(!active||isDestroyed()||player==null)return;
+                    episodeIndex=next;progressKey="episode:"+seriesId+":"+id;
+                    getIntent().putExtra("url",url).putExtra("name",name).putExtra("content_key",progressKey)
+                        .putExtra("episode_index",next).putExtra("start_position",0L);
+                    applyTrackPreferences();play(url);});
+            }catch(Exception e){main.post(()->{if(active)showStatus("Could not open the next episode. Press Back to return to the library.");});}
+        });
+    }
     private void replaceLivePlayer(){
         cancelRetry();cancelStall();
         view.setPlayer(null);
@@ -167,7 +247,10 @@ public final class PlayerActivity extends Activity {
     private void play(String url){
         try{
             if(!(BuildConfig.DEBUG&&"asset:///playback-test.mp4".equals(url)))Source.normalize(url);
-            cancelRetry();cancelStall();retries=0;showBanner();showStatus("Fetching the stream…");
+            cancelRetry();cancelStall();retries=0;
+            nextEpisode.setVisibility(android.view.View.GONE);nextDismissed=false;nextOffered=false;
+            main.removeCallbacks(offerNext);if(hasNextEpisode())main.postDelayed(offerNext,1000);
+            showBanner();showStatus("Fetching the stream…");
             if(player.getMediaItemCount()>0)player.stop();
             player.setMediaItem(MediaItem.fromUri(url));player.prepare();player.play();
         }catch(Exception e){showStatus("Invalid stream address. Press Back to return to channels.");}
@@ -186,6 +269,8 @@ public final class PlayerActivity extends Activity {
     }
     @Override public boolean dispatchKeyEvent(KeyEvent event){
         int key=event.getKeyCode();
+        // While the next-episode button holds focus it owns the remote: OK must press it, not reveal the controls.
+        if(nextEpisode.hasFocus()&&key!=KeyEvent.KEYCODE_BACK)return super.dispatchKeyEvent(event);
         if(!onDemand&&(key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN)){
             if(event.getAction()==KeyEvent.ACTION_DOWN&&(event.getRepeatCount()==0||SystemClock.elapsedRealtime()-lastChange>=180)){lastChange=SystemClock.elapsedRealtime();changeChannel(key==KeyEvent.KEYCODE_DPAD_UP?1:-1);}return true;
         }
@@ -199,7 +284,12 @@ public final class PlayerActivity extends Activity {
         if(onDemand&&view.dispatchKeyEvent(event))return true;
         return super.dispatchKeyEvent(event);
     }
-    @Override public void onBackPressed(){if(onDemand&&view.isControllerFullyVisible()){view.hideController();return;}super.onBackPressed();}
+    @Override public void onBackPressed(){
+        if(onDemand&&view.isControllerFullyVisible()){view.hideController();return;}
+        // Dismissing the closing-minute offer returns the viewer to the picture; at the credits there is nothing to return to.
+        if(nextOffered&&player!=null&&player.getPlaybackState()!=Player.STATE_ENDED){
+            nextDismissed=true;nextOffered=false;nextEpisode.setVisibility(android.view.View.GONE);view.requestFocus();return;}
+        super.onBackPressed();}
     @Override public void onStop(){active=false;++switchVersion;main.removeCallbacksAndMessages(null);retryTask=null;stallTask=null;requestedChannelId=channelId;if(player!=null){
         if(onDemand){long position=player.getCurrentPosition(),duration=player.getDuration();getIntent().putExtra("start_position",position);io.execute(()->catalog.savePlayback(progressKey,position,duration));}
         view.setPlayer(null);player.release();player=null;}super.onStop();}

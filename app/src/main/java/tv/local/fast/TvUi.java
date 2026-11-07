@@ -39,7 +39,16 @@ final class TvUi {
         ImageView mark=new ImageView(activity);mark.setImageResource(R.drawable.icon);LinearLayout.LayoutParams logo=new LinearLayout.LayoutParams(dp(52),dp(52));logo.setMarginEnd(dp(10));top.addView(mark,logo);
         TextView title=text(activity.getString(R.string.app_name),22,INK);title.setTypeface(null,Typeface.BOLD);top.addView(title,new LinearLayout.LayoutParams(0,dp(52),1));
         String[] names={"Live TV","Films","Series"};Runnable[] actions={live,films,series};
-        for(int i=0;i<names.length;i++){Button b=button(names[i],actions[i]);b.setTag("nav-"+names[i]);if(active.equals(names[i])){b.setBackground(shape(ACCENT,0));b.setTextColor(BG);b.setEnabled(false);}top.addView(b);}return top;
+        for(int i=0;i<names.length;i++){Button b=button(names[i],actions[i]);b.setTag("nav-"+names[i]);b.setId(View.generateViewId());if(active.equals(names[i])){StateListDrawable bg=new StateListDrawable();bg.addState(new int[]{android.R.attr.state_focused},shape(0xff304d3c,ACCENT));bg.addState(new int[]{},shape(ACCENT,0));b.setBackground(bg);b.setTextColor(new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_focused},new int[]{}},new int[]{INK,BG}));}top.addView(b);}return top;
+    }
+    void linkHeader(LinearLayout header){
+        View previous=null;
+        for(int i=0;i<header.getChildCount();i++){
+            View child=header.getChildAt(i);if(!(child instanceof Button))continue;
+            if(child.getId()==View.NO_ID)child.setId(View.generateViewId());
+            if(previous!=null){previous.setNextFocusRightId(child.getId());child.setNextFocusLeftId(previous.getId());}
+            previous=child;
+        }
     }
     static void searchDialog(Activity activity,View root,String title,String hint,String initial,java.util.function.Consumer<String> apply){
         EditText field=new EditText(activity);field.setSingleLine(true);field.setText(initial);field.setHint(hint);

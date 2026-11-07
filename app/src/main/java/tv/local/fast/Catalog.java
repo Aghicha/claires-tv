@@ -10,9 +10,11 @@ import java.util.List;
 
 final class Catalog extends SQLiteOpenHelper {
     static final int PAGE=250;
+    private final Context context;
     record Group(String id,String name,int count) { @Override public String toString(){return name+"  ·  "+count;} }
     Catalog(Context c) { this(c,"catalog.db"); }
-    Catalog(Context c,String name) { super(c,name,null,6); setWriteAheadLoggingEnabled(true); }
+    Catalog(Context c,String name) { super(c,name,null,6); context=c.getApplicationContext(); setWriteAheadLoggingEnabled(true); }
+    Context context(){return context;}
     @Override public void onCreate(SQLiteDatabase d) {
         d.execSQL("CREATE TABLE channels(id TEXT PRIMARY KEY,name TEXT NOT NULL,category TEXT NOT NULL,url TEXT NOT NULL,position INTEGER NOT NULL)");
         d.execSQL("CREATE INDEX channels_category ON channels(category,position)");
@@ -129,8 +131,8 @@ final class Catalog extends SQLiteOpenHelper {
      */
     private static String resumable(String kind){
         return kind.equals("series")
-            ?"EXISTS(SELECT 1 FROM playback_progress p WHERE p.position>0 AND p.id LIKE 'episode:'||c.id||':%')"
-            :"EXISTS(SELECT 1 FROM playback_progress p WHERE p.position>0 AND p.id='movie:'||c.id)";
+            ?"c.id IN (SELECT substr(p.id,9,instr(substr(p.id,9),':')-1) FROM playback_progress p WHERE p.position>0 AND p.id LIKE 'episode:%' AND instr(substr(p.id,9),':')>0)"
+            :"c.id IN (SELECT substr(p.id,7) FROM playback_progress p WHERE p.position>0 AND p.id LIKE 'movie:%')";
     }
     private static String resumedAt(String kind){
         return "(SELECT max(p.updated) FROM playback_progress p WHERE p.position>0 AND "

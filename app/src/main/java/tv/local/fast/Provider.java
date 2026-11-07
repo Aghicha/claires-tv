@@ -70,25 +70,35 @@ final class Provider {
         } finally {connection.disconnect();}
     }
     static int refresh(Catalog catalog, Source source, boolean replacing) throws Exception {
+        long started=android.os.SystemClock.elapsedRealtime();
         String encrypted=Vault.encrypt(source);
-        SQLiteDatabase d=catalog.getWritableDatabase();
-        d.beginTransaction();
-        try {
-            d.delete("channels",null,null);d.delete("groups",null,null);d.delete("epg",null,null);
-            if(replacing){d.delete("favorites",null,null);d.delete("category_order",null,null);Catalog.clearLibraries(d);}
-            if(source.type.equals("xtream")) importGroups(d,source);
-            int[] count={0};
-            try(SQLiteStatement insert=d.compileStatement("INSERT OR REPLACE INTO channels(id,name,category,url,position) VALUES(?,?,?,?,?)")) {
-                Playlist.Sink sink=c->{insert.clearBindings();insert.bindString(1,c.id);insert.bindString(2,c.name);insert.bindString(3,c.category);insert.bindString(4,c.url);insert.bindLong(5,count[0]++);insert.executeInsert();};
-                if(source.type.equals("m3u")) {try(Response r=new Response(source.endpoint,CATALOG_BYTES)){Playlist.parse(r.reader,source.endpoint,sink);}}
-                else importXtream(source,sink);
-            }
-            if(count[0]==0) throw new IOException("No live channels were returned. Check your source and subscription.");
-            ContentValues v=new ContentValues();v.put("id","source");v.put("value",encrypted);
-            d.insertWithOnConflict("meta",null,v,SQLiteDatabase.CONFLICT_REPLACE);
-            d.execSQL("DELETE FROM favorites WHERE id NOT IN (SELECT id FROM channels)");
-            d.setTransactionSuccessful();return count[0];
-        } finally {d.endTransaction();}
+        try(ImportStage stage=new ImportStage(catalog)){
+            SQLiteDatabase incoming=stage.database();
+            incoming.execSQL("CREATE TABLE channels(id TEXT PRIMARY KEY,name TEXT NOT NULL,category TEXT NOT NULL,url TEXT NOT NULL,position INTEGER NOT NULL)");
+            incoming.execSQL("CREATE TABLE groups(id TEXT PRIMARY KEY,name TEXT NOT NULL)");
+            int[] count={0};incoming.beginTransaction();
+            try{
+                if(source.type.equals("xtream"))importGroups(incoming,source);
+                try(SQLiteStatement insert=incoming.compileStatement("INSERT OR REPLACE INTO channels(id,name,category,url,position) VALUES(?,?,?,?,?)")) {
+                    Playlist.Sink sink=c->{insert.clearBindings();insert.bindString(1,c.id);insert.bindString(2,c.name);insert.bindString(3,c.category);insert.bindString(4,c.url);insert.bindLong(5,count[0]++);insert.executeInsert();};
+                    if(source.type.equals("m3u")){try(Response r=new Response(source.endpoint,CATALOG_BYTES)){Playlist.parse(r.reader,source.endpoint,sink);}}
+                    else importXtream(source,sink);
+                }
+                if(count[0]==0)throw new IOException("No live channels were returned. Check your source and subscription.");
+                incoming.setTransactionSuccessful();
+            }finally{incoming.endTransaction();}
+            SQLiteDatabase d=catalog.getWritableDatabase();stage.attach(d);
+            try{
+                d.beginTransaction();try{
+                    d.delete("channels",null,null);d.delete("groups",null,null);d.delete("epg",null,null);
+                    if(replacing){d.delete("favorites",null,null);d.delete("category_order",null,null);Catalog.clearLibraries(d);}
+                    d.execSQL("INSERT INTO channels SELECT * FROM imported.channels");d.execSQL("INSERT INTO groups SELECT * FROM imported.groups");
+                    ContentValues v=new ContentValues();v.put("id","source");v.put("value",encrypted);d.insertWithOnConflict("meta",null,v,SQLiteDatabase.CONFLICT_REPLACE);
+                    d.execSQL("DELETE FROM favorites WHERE id NOT IN (SELECT id FROM channels)");d.setTransactionSuccessful();
+                }finally{d.endTransaction();}
+            }finally{d.execSQL("DETACH DATABASE imported");}
+            android.util.Log.i("ClaireTV","live_refresh source="+source.type+" channels="+count[0]+" import_ms="+(android.os.SystemClock.elapsedRealtime()-started));return count[0];
+        }
     }
     private static String scalar(JsonReader j) throws IOException {if(j.peek()==JsonToken.NULL){j.nextNull();return "";}return j.nextString();}
     static void importGroups(SQLiteDatabase d,Source s) throws Exception {

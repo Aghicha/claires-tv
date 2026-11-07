@@ -17,12 +17,13 @@ import java.util.concurrent.*;
  */
 final class Posters {
     private static final int DISK_FILES=600;
+    private static final long DISK_BYTES=80L*1024*1024;
     private static final long MAX_IMAGE_BYTES=2L*1024*1024;
     private static final Bitmap MISSING=Bitmap.createBitmap(1,1,Bitmap.Config.ALPHA_8);// negative cache, never drawn
     private static Posters instance;
 
     private final LruCache<String,Bitmap> memory;
-    private final ExecutorService io=Executors.newFixedThreadPool(3,r->{Thread t=new Thread(r,"poster");t.setPriority(Thread.MIN_PRIORITY);return t;});
+    private final ExecutorService io=new ThreadPoolExecutor(3,3,0,TimeUnit.SECONDS,new LinkedBlockingDeque<>(128),r->{Thread t=new Thread(r,"poster");t.setPriority(Thread.MIN_PRIORITY);return t;},new ThreadPoolExecutor.DiscardOldestPolicy());
     private final Handler main=new Handler(Looper.getMainLooper());
     private final File dir;
 
@@ -37,7 +38,10 @@ final class Posters {
         };
         dir=new File(context.getCacheDir(),"posters");
         if(!dir.isDirectory()&&!dir.mkdirs())android.util.Log.w("ClaireTV","poster_cache_unavailable");
+        io.execute(this::trim);
     }
+    void clearPending(){((ThreadPoolExecutor)io).getQueue().clear();}
+    static synchronized void trimMemory(){if(instance!=null)instance.memory.evictAll();}
     /** Providers return empty strings, "null" and bare whitespace for titles that have no artwork. */
     static String clean(String url){
         if(url==null)return "";
@@ -59,7 +63,7 @@ final class Posters {
         io.execute(()->{
             if(!url.equals(view.getTag(R.id.poster_url)))return;// recycled before we started
             Bitmap bitmap=fetch(url,width,height);
-            memory.put(url,bitmap==null?MISSING:bitmap);
+            if(bitmap!=null)memory.put(url,bitmap);
             main.post(()->{if(url.equals(view.getTag(R.id.poster_url)))apply(view,bitmap==null?MISSING:bitmap,placeholder);});
         });
     }
@@ -102,16 +106,18 @@ final class Posters {
             return out.size()==0?null:out.toByteArray();
         }catch(IOException e){return null;}
     }
-    private void write(File file,byte[] body){
+    private synchronized void write(File file,byte[] body){
         try(OutputStream out=new FileOutputStream(file)){out.write(body);}catch(IOException e){return;}
         trim();
     }
-    /** ponytail: oldest-first trim by modification time, run after a miss. A real LRU index is not worth it for 600 files. */
-    private void trim(){
-        File[] files=dir.listFiles();
-        if(files==null||files.length<=DISK_FILES)return;
+    private synchronized void trim(){trimDirectory(dir,DISK_FILES,DISK_BYTES);}
+    static void trimDirectory(File directory,int maxFiles,long maxBytes){
+        File[] files=directory.listFiles(File::isFile);if(files==null)return;
+        long size=0;for(File file:files)size+=file.length();
+        if(files.length<=maxFiles&&size<=maxBytes)return;
         java.util.Arrays.sort(files,(a,b)->Long.compare(a.lastModified(),b.lastModified()));
-        for(int i=0;i<files.length-DISK_FILES;i++)if(!files[i].delete())return;
+        int remaining=files.length;
+        for(File file:files){if(remaining<=maxFiles&&size<=maxBytes)break;long bytes=file.length();if(file.delete()){remaining--;size-=bytes;}}
     }
     private static String name(String url){
         try{
