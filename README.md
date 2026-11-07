@@ -117,6 +117,8 @@ failed refresh keeps the previous catalog.
   OK saves and Back cancels. The order survives restarts and ordinary refreshes.
 - **Films / Series**: OK on a poster opens its page; holding OK toggles a favorite without opening it. Back
   returns to the grid where you left it.
+- **Film / episode playback**: press OK to show controls. Select the captions button to choose subtitles or
+  turn them off, and the settings button to choose an available audio track.
 - **Search**: in either dialog the keyboard's Search/Done key or Enter submits, hides the keyboard and
   returns focus to the results.
 

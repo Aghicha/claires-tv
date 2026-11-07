@@ -48,7 +48,7 @@ public final class PlayerActivity extends Activity {
         sourceType=getIntent().getStringExtra("source_type");
         progressKey=getIntent().getStringExtra("content_key");onDemand=progressKey!=null;
         FrameLayout root=new FrameLayout(this);view=new PlayerView(this);view.setTag("video-player");
-        view.setUseController(onDemand);view.setControllerAutoShow(false);view.setKeepContentOnPlayerReset(true);view.setShowNextButton(false);view.setShowPreviousButton(false);
+        view.setUseController(onDemand);view.setControllerAutoShow(false);view.setKeepContentOnPlayerReset(true);view.setShowNextButton(false);view.setShowPreviousButton(false);view.setShowSubtitleButton(onDemand);
         root.addView(view,new FrameLayout.LayoutParams(-1,-1));
         // A slim translucent strip, not a scrim: the picture stays visible behind the channel name.
         banner=new TextView(this);banner.setTextColor(0xffffffff);banner.setTextSize(15);banner.setPadding(dp(24),dp(9),dp(24),dp(9));
