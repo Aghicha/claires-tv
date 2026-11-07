@@ -24,7 +24,7 @@ public final class LibraryActivity extends Activity {
     private Source source;
     private TvUi ui;
     private Posters posters;
-    private LinearLayout root;
+    private LinearLayout root,headerRow;
     private TextView status,refreshStatus;
     // browse
     private TextView groupHeading,itemHeading;
@@ -82,7 +82,7 @@ public final class LibraryActivity extends Activity {
 
     private LinearLayout shell(String activeNav){
         root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(ui.dp(24),ui.dp(16),ui.dp(24),ui.dp(16));root.setBackgroundColor(BG);setContentView(root);
-        LinearLayout header=ui.header(activeNav,this::live,()->openKind("movie",false),()->openKind("series",false));
+        LinearLayout header=headerRow=ui.header(activeNav,this::live,()->openKind("movie",false),()->openKind("series",false));
         refresh=ui.button("Refresh",()->{if(!loading)refreshLibrary();});refresh.setTag("library-refresh");header.addView(refresh);Button settings=ui.button("Settings",this::openSettings);settings.setTag("settings");header.addView(settings);ui.linkHeader(header);root.addView(header);
         refreshStatus=ui.text("",14,MUTED);refreshStatus.setVisibility(View.GONE);root.addView(refreshStatus);
         status=ui.text("",14,MUTED);status.setMinHeight(ui.dp(36));status.setVisibility(View.GONE);root.addView(status);
@@ -131,6 +131,18 @@ public final class LibraryActivity extends Activity {
         });
         grid.setOnItemClickListener((p,v,pos,id)->{LibraryItem item=titles.at(pos);if(item!=null)openDetail(item);});
         grid.setOnItemLongClickListener((p,v,pos,id)->{LibraryItem item=titles.at(pos);if(item==null)return false;toggleFavorite(item);return true;});
+
+        // Three deterministic tiers — header, the search row, the panel each button searches — because geometric
+        // focus search picks whichever control happens to sit nearest, which is a different one on every screen.
+        // A list or grid only consults these at its own edge; inside itself it still moves row by row.
+        groupList.setId(View.generateViewId());grid.setId(View.generateViewId());
+        groupSearchButton.setId(View.generateViewId());itemSearchButton.setId(View.generateViewId());
+        int nav=TvUi.navId(root,kind.equals("movie")?"Films":"Series");
+        TvUi.headerDownTo(headerRow,itemSearchButton.getId());
+        groupSearchButton.setNextFocusUpId(nav);groupSearchButton.setNextFocusDownId(groupList.getId());groupSearchButton.setNextFocusRightId(itemSearchButton.getId());
+        itemSearchButton.setNextFocusUpId(nav);itemSearchButton.setNextFocusDownId(grid.getId());itemSearchButton.setNextFocusLeftId(groupSearchButton.getId());
+        groupList.setNextFocusUpId(groupSearchButton.getId());groupList.setNextFocusRightId(grid.getId());
+        grid.setNextFocusUpId(itemSearchButton.getId());grid.setNextFocusLeftId(groupList.getId());
     }
     private void refreshLibrary(){
         if(source==null||!source.type.equals("xtream"))return;
@@ -232,7 +244,7 @@ public final class LibraryActivity extends Activity {
         column.addView(page,new LinearLayout.LayoutParams(-1,0,1));
 
         // A film can spend the whole page on its description; a series must leave room for its episodes.
-        int art=movie?300:140;
+        int art=movie?300:210;
         LinearLayout top=new LinearLayout(this);
         page.addView(top,movie?new LinearLayout.LayoutParams(-1,0,1):new LinearLayout.LayoutParams(-1,ui.dp(art)));
         detailPoster=new ImageView(this);detailPoster.setTag("library-poster");detailPoster.setScaleType(ImageView.ScaleType.FIT_START);
@@ -241,7 +253,10 @@ public final class LibraryActivity extends Activity {
 
         LinearLayout info=new LinearLayout(this);info.setOrientation(LinearLayout.VERTICAL);top.addView(info,new LinearLayout.LayoutParams(0,-1,1));
         detailTitle=ui.text(item.name,24,INK);detailTitle.setTypeface(null,Typeface.BOLD);detailTitle.setMaxLines(2);detailTitle.setEllipsize(TextUtils.TruncateAt.END);info.addView(detailTitle);
-        ScrollView factsScroll=new ScrollView(this);factsScroll.setFocusable(false);
+        // A long plot does not fit the panel, so the description takes focus and scrolls: outlined when focused,
+        // invisible otherwise, because it is read far more often than it is operated.
+        ScrollView factsScroll=new ScrollView(this);factsScroll.setId(View.generateViewId());factsScroll.setTag("library-facts");
+        factsScroll.setFocusable(true);factsScroll.setBackground(ui.readable());factsScroll.setPadding(ui.dp(8),0,0,0);
         detailFacts=ui.text(LibraryData.describe(item.summary),14,MUTED);detailFacts.setGravity(Gravity.TOP);detailFacts.setPadding(0,ui.dp(8),ui.dp(12),ui.dp(8));
         factsScroll.addView(detailFacts);info.addView(factsScroll,new LinearLayout.LayoutParams(-1,0,1));
 
@@ -253,6 +268,14 @@ public final class LibraryActivity extends Activity {
 
         detailExtra=new LinearLayout(this);detailExtra.setOrientation(LinearLayout.VERTICAL);detailExtra.setPadding(0,ui.dp(10),0,0);
         page.addView(detailExtra,movie?new LinearLayout.LayoutParams(-1,-2):new LinearLayout.LayoutParams(-1,0,1));
+
+        // The detail page reads left to right: description, then the actions beside it. Up from either returns
+        // to the section in the header, so the way back out is the same wherever the viewer is standing.
+        int nav=TvUi.navId(root,movie?"Films":"Series");
+        TvUi.headerDownTo(headerRow,watch.getId());
+        factsScroll.setNextFocusUpId(nav);factsScroll.setNextFocusRightId(watch.getId());factsScroll.setNextFocusLeftId(factsScroll.getId());
+        watch.setNextFocusUpId(nav);watch.setNextFocusLeftId(factsScroll.getId());watch.setNextFocusDownId(favorite.getId());
+        favorite.setNextFocusUpId(watch.getId());favorite.setNextFocusLeftId(factsScroll.getId());
         watch.requestFocus();
 
         if(movie){
@@ -305,15 +328,21 @@ public final class LibraryActivity extends Activity {
         detailExtra.addView(episodeList,new LinearLayout.LayoutParams(-1,0,1));
 
         // Geometric focus search will not step from the buttons into the list across these nested rows, so the
-        // Down path is wired by hand: actions → season buttons → episodes.
+        // Down path is wired by hand: actions → season buttons → episodes. The seasons row is also closed at
+        // both ends, so Left on the first season stays on it instead of escaping sideways into the description.
         int firstSeason=seasonRow.getChildCount()>0?seasonRow.getChildAt(0).getId():episodeList.getId();
         favorite.setNextFocusDownId(firstSeason);
         watch.setNextFocusDownId(favorite.getId());
-        episodeSearchButton.setNextFocusDownId(episodeList.getId());
+        episodeSearchButton.setNextFocusDownId(episodeList.getId());episodeSearchButton.setNextFocusUpId(favorite.getId());
         for(int i=0;i<seasonRow.getChildCount();i++){
             View b=seasonRow.getChildAt(i);b.setNextFocusDownId(episodeList.getId());b.setNextFocusUpId(favorite.getId());
+            if(i==0)b.setNextFocusLeftId(b.getId());
+            if(i+1<seasonRow.getChildCount())b.setNextFocusRightId(seasonRow.getChildAt(i+1).getId());
+            else b.setNextFocusRightId(episodeSearchButton.getId());
+            if(i>0)b.setNextFocusLeftId(seasonRow.getChildAt(i-1).getId());
         }
-        episodeList.setNextFocusUpId(firstSeason);
+        episodeSearchButton.setNextFocusLeftId(firstSeason==episodeList.getId()?episodeSearchButton.getId():seasonRow.getChildAt(seasonRow.getChildCount()-1).getId());
+        episodeList.setNextFocusUpId(firstSeason);episodeList.setNextFocusLeftId(episodeList.getId());
         episodeList.setOnItemClickListener((p,v,pos,id)->{LibraryData.Episode e=episodeRows.at(pos);if(e!=null){selectedEpisode=e;playEpisode(e);}});
         episodeList.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}
             public void onItemSelected(AdapterView<?> p,View v,int pos,long id){LibraryData.Episode e=episodeRows.at(pos);if(e!=null){selectedEpisode=e;watchLabel();}}});

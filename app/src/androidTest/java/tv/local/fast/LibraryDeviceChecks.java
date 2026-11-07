@@ -37,6 +37,16 @@ final class LibraryDeviceChecks {
         test.runOnMainSync(()->{View cell=list(browser).getChildAt(0);check(cell.findViewById(android.R.id.content)==null&&cell instanceof LinearLayout,"Cell is a poster box");
             check(((LinearLayout)cell).getChildAt(0) instanceof ImageView,"Each film cell carries a poster image");});
         screenshot(test,"library-films.png");
+        // Arrow movement is wired, not geometric: each edge has one named destination on every screen.
+        test.runOnMainSync(()->{
+            View content=browser.findViewById(android.R.id.content);AbsListView grid=list(browser),categories=content.findViewWithTag("library-categories");
+            check(grid.focusSearch(View.FOCUS_UP)==content.findViewWithTag("library-search"),"Up from the poster grid reaches its own search button");
+            check(grid.focusSearch(View.FOCUS_LEFT)==categories,"Left from the poster grid reaches the categories");
+            check(categories.focusSearch(View.FOCUS_UP)==content.findViewWithTag("library-category-search"),"Up from the categories reaches the category search");
+            check(categories.focusSearch(View.FOCUS_RIGHT)==grid,"Right from the categories reaches the poster grid");
+            check(content.findViewWithTag("library-search").focusSearch(View.FOCUS_UP)==content.findViewWithTag("nav-Films"),"Up from the search row reaches the section in the header");
+            check(content.findViewWithTag("nav-Films").focusSearch(View.FOCUS_DOWN)==content.findViewWithTag("library-search"),"Down from the header enters the content it heads");
+        });
         click(test,browser,"library-search");test.waitForIdleSync();
         AccessibilityNodeInfo edit=CatalogInstrumentation.waitFocusedField(test,"Film search field takes input focus");
         Bundle text=new Bundle();text.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,"Fixture film 0270");edit.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT,text);
@@ -61,8 +71,15 @@ final class LibraryDeviceChecks {
         openSelected(test,browser);
         await(test,()->browser.findViewById(android.R.id.content).findViewWithTag("library-detail")!=null,"Film opens a detail page");
         test.runOnMainSync(()->{
-            check(browser.findViewById(android.R.id.content).findViewWithTag("library-poster") instanceof ImageView,"Detail page shows the artwork");
-            check(browser.findViewById(android.R.id.content).findViewWithTag("library-list")==null,"Detail page replaces the browse grid");
+            View content=browser.findViewById(android.R.id.content);
+            check(content.findViewWithTag("library-poster") instanceof ImageView,"Detail page shows the artwork");
+            check(content.findViewWithTag("library-list")==null,"Detail page replaces the browse grid");
+            // The description takes focus so a plot longer than the panel can be scrolled instead of cropped.
+            View facts=content.findViewWithTag("library-facts"),play=content.findViewWithTag("library-play");
+            check(facts instanceof ScrollView&&facts.isFocusable(),"The description can be focused and scrolled");
+            check(play.focusSearch(View.FOCUS_LEFT)==facts,"Left from Watch reaches the description");
+            check(facts.focusSearch(View.FOCUS_RIGHT)==play,"Right from the description returns to Watch");
+            check(play.focusSearch(View.FOCUS_UP)==content.findViewWithTag("nav-Films"),"Up from Watch reaches the section in the header");
         });
         await(test,()->button(browser,"library-play").getText().toString().startsWith("Resume from "),"Film detail offers to resume where it stopped");
         await(test,()->text(browser,"library-detail").contains("Synthetic film for local UI testing."),"Film detail shows the provider plot");

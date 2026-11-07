@@ -21,6 +21,11 @@ final class TvUi {
         StateListDrawable bg=new StateListDrawable();bg.addState(new int[]{android.R.attr.state_focused},shape(0xff304d3c,ACCENT));
         bg.addState(new int[]{android.R.attr.state_pressed},shape(0xff304d3c,ACCENT));bg.addState(new int[]{},shape(SURFACE,0));return bg;
     }
+    /** Outline for something that is read rather than pressed: visible only while it holds focus to be scrolled. */
+    StateListDrawable readable(){
+        StateListDrawable bg=new StateListDrawable();bg.addState(new int[]{android.R.attr.state_focused},shape(0x00000000,ACCENT));
+        bg.addState(new int[]{},new ColorDrawable(0));return bg;
+    }
     /** Selector an AbsListView draws behind the current row or cell; its own focus state drives it. */
     StateListDrawable rowSelector(){
         StateListDrawable selector=new StateListDrawable();selector.addState(new int[]{android.R.attr.state_focused},shape(0xff304d3c,ACCENT));
@@ -41,6 +46,12 @@ final class TvUi {
         String[] names={"Live TV","Films","Series"};Runnable[] actions={live,films,series};
         for(int i=0;i<names.length;i++){Button b=button(names[i],actions[i]);b.setTag("nav-"+names[i]);b.setId(View.generateViewId());if(active.equals(names[i])){StateListDrawable bg=new StateListDrawable();bg.addState(new int[]{android.R.attr.state_focused},shape(0xff304d3c,ACCENT));bg.addState(new int[]{},shape(ACCENT,0));b.setBackground(bg);b.setTextColor(new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_focused},new int[]{}},new int[]{INK,BG}));}top.addView(b);}return top;
     }
+    /** Down from anywhere in the header enters the content it heads, rather than whatever control sits nearest. */
+    static void headerDownTo(LinearLayout header,int targetId){
+        for(int i=0;i<header.getChildCount();i++){View child=header.getChildAt(i);if(child instanceof Button)child.setNextFocusDownId(targetId);}
+    }
+    /** The id of a header nav button, so Up out of the content lands on the section the viewer is already in. */
+    static int navId(View root,String name){View nav=root.findViewWithTag("nav-"+name);return nav==null?View.NO_ID:nav.getId();}
     void linkHeader(LinearLayout header){
         View previous=null;
         for(int i=0;i<header.getChildCount();i++){

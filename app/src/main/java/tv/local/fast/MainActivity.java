@@ -104,6 +104,14 @@ public final class MainActivity extends Activity {
         // Information is read, never operated: nothing in it takes focus, so Right from the categories reaches
         // the channels instead of stopping in the guide. OK plays a channel and holding OK favorites it.
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setFocusable(false);guide=text("The guide appears here when you select a channel.",13,MUTED);guide.setGravity(Gravity.TOP);guide.setPadding(0,dp(12),dp(8),dp(12));scroll.addView(guide);right.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        // Same three deterministic tiers as the library: header, the search row, the list each button searches.
+        categorySearch.setId(View.generateViewId());channelSearch.setId(View.generateViewId());
+        int nav=TvUi.navId(root,"Live TV");
+        TvUi.headerDownTo(top,channelSearch.getId());
+        categorySearch.setNextFocusUpId(nav);categorySearch.setNextFocusDownId(groupList.getId());categorySearch.setNextFocusRightId(channelSearch.getId());
+        channelSearch.setNextFocusUpId(nav);channelSearch.setNextFocusDownId(channelList.getId());channelSearch.setNextFocusLeftId(categorySearch.getId());
+        groupList.setNextFocusUpId(categorySearch.getId());groupList.setNextFocusLeftId(groupList.getId());
+        channelList.setNextFocusUpId(channelSearch.getId());channelList.setNextFocusRightId(channelList.getId());
         groupList.setNextFocusRightId(channelList.getId());channelList.setNextFocusLeftId(groupList.getId());
         groupList.setOnItemClickListener((p,v,position,id)->{if(movingGroup!=null)finishReorder(true);else chooseGroup(position);});
         groupList.setOnItemLongClickListener((p,v,position,id)->{if(position<groups.size())beginReorder(groups.get(position).id());return true;});
